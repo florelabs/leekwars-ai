@@ -13,7 +13,10 @@ from world import World, snapshot
 DEBUG = True
 
 # Profil de base : équilibré. Les poids sont en PV (cf docs/planner.md).
-BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30, max_stops=2, beam=8, budget=0.7)
+# Budget : `budget` est une part de System.maxOperations (cœurs × 1 M). Avec beaucoup de cœurs, le vrai
+# plafond est le wall-clock de 5 s/tour : 0.25 sur 20 cœurs = 5 M d'ops, dépensés en profondeur de recherche.
+BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30,
+               max_stops=3, beam=16, k_walk=8, refine_plans=6, budget=0.25)
 
 scores: list[float] = []  # persiste entre les tours (les globales survivent, cf docs/runtime.md)
 
@@ -77,6 +80,11 @@ def turn() -> None:
     world = snapshot()
     if not world.enemies:
         return
+    if DEBUG and world.turn == 1:
+        # Ce que la lib a compris du loadout : un skill absent ou en `other` ici = une puce ignorée par le planner.
+        Debug.log("skills : " + ", ".join(f"{s.key}[{s.kind}{'' if s.available else ' cd'}]" for s in world.me.skills))
+        Debug.log("ennemis : " + ", ".join(f"{e.name} {e.life}PV {e.tp}PT {e.mp}PM {len(e.skills)} skills"
+                                            for e in world.enemies))
     profile = pick_profile(world)
     phases = Phases(world.ops)
     plan: Plan | None = None

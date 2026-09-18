@@ -40,6 +40,9 @@ STAY = "stay"
 VIA_TELEPORT = "teleport"
 HITS_PER_TURN = 3  # nombre d'attaques ennemies estimé pour valoriser un bouclier absolu
 
+# Cible principale du tour précédent (les globales survivent au tour) : persistance du focus.
+focus: dict[str, int | None] = {"target": None}
+
 
 @dataclass
 class Action:
@@ -111,10 +114,35 @@ class Planner:
         self._tp_ring: dict[int, list[int]] = {}
         self.evaluations = 0
         self.finalists: list[Plan] = []
+        self.target_w: dict[int, float] = self.target_weights()
         self.tp_skill: Skill | None = None
         for s in world.me.skills:
             if s.kind == TELEPORT and s.available and s.cost <= world.me.tp and not world.teleport_used:
                 self.tp_skill = s
+
+    # ---- priorisation de cible ---------------------------------------------------------------------
+
+    def target_weights(self) -> dict[int, float]:
+        """Multiplicateur de la valeur des dégâts par ennemi, calculé une fois par tour : menace (son alpha
+        sur moi), invocation, finissable ce tour, persistance du focus. La composante « blessé »
+        (`w_low_life`) reste dans `evaluate` car elle dépend de la vie courante."""
+        p = self.p
+        enemies = self.w.enemies
+        if not enemies:
+            return {}
+        alphas = {e.id: self.d.alpha(e) for e in enemies}
+        max_alpha = max(alphas.values()) or 1.0
+        out: dict[int, float] = {}
+        for e in enemies:
+            w = 1.0 + p.w_threat * alphas[e.id] / max_alpha
+            if e.summoned:
+                w *= p.w_summon
+            if e.life <= self.d.my_alpha_vs(e):
+                w *= p.w_finish
+            if focus["target"] == e.id:
+                w *= p.w_focus
+            out[e.id] = w
+        return out
 
     # ---- utilitaires -------------------------------------------------------------------------------
 
@@ -265,6 +293,11 @@ class Planner:
                 if self.over_budget():
                     break
             best = max(finalists, key=lambda p: p.score)
+        dealt: dict[int, float] = {}
+        for sk, _si, tid, _n, raw in best.chosen:
+            if sk.kind in (DAMAGE, POISON):
+                dealt[tid] = dealt.get(tid, 0.0) + raw
+        focus["target"] = max(dealt, key=lambda t: dealt[t]) if dealt else None
         return best
 
     def refine(self, plan: Plan) -> None:
@@ -366,7 +399,7 @@ class Planner:
                         v1 = unit_damage(sk, me, e, self.p.poison_discount)
                         if v1 <= 0:
                             continue
-                        mult = 1.0 + self.p.w_low_life * (1.0 - e.life / e.max_life)
+                        mult = self.target_w[e.id] * (1.0 + self.p.w_low_life * (1.0 - e.life / e.max_life))
                         opts.extend((n * sk.cost + switch, n * v1 * mult, (sk, si, e.id, n, n * v1))
                                     for n in range(1, sk.uses_cap(tp - switch) + 1))
                 if opts:

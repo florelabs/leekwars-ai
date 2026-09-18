@@ -11,6 +11,10 @@ class Profile:
     w_safety: float = 1.0  # 1 = un PV reçu vaut un PV infligé ; > 1 prudent, < 1 agressif
     w_kill: float = 150.0  # bonus fixe par ennemi tué (en PV)
     w_low_life: float = 0.5  # focus : dégâts sur une cible à 0 % de vie valent (1 + w_low_life) fois plus
+    w_threat: float = 0.5  # priorité à ce qui fait mal : × (1 + w_threat × alpha(e) / alpha max)
+    w_summon: float = 0.4  # multiplicateur des dégâts sur une invocation (bulbe)
+    w_finish: float = 1.3  # multiplicateur si je peux le tuer ce tour (vie ≤ mon alpha sur lui)
+    w_focus: float = 1.2  # multiplicateur sur la cible principale du tour précédent (persistance)
     w_tp_reserve: float = 30.0  # malus d'utilisation de la téléportation (cooldown 10)
     w_pressure: float = 0.5  # valeur des dégâts que JE pourrais infliger au prochain tour depuis la case finale
     w_stack: float = 0.6  # rendement de chaque bouclier supplémentaire posé le même tour (en garder pour plus tard)

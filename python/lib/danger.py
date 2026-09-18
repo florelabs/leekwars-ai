@@ -201,6 +201,15 @@ class Danger:
 
     # ---- pression moi → ennemi, engagement -----------------------------------------------------------
 
+    def my_alpha_vs(self, e: Ent) -> float:
+        """Mes dégâts max en un tour (PT max) sur `e` précisément."""
+        dmg = self._my_dmg.get(e.id)
+        if dmg is None:
+            me = self.world.me
+            dmg = damage_by_range(me, e, me.max_tp, self.poison_discount)
+            self._my_dmg[e.id] = dmg
+        return dmg[0]
+
     def my_alpha(self, me: Ent | None = None) -> float:
         """Mes dégâts max en un tour (PT max) sur l'ennemi le plus rentable, pour un `me` donné."""
         me = me or self.world.me
