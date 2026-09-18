@@ -106,6 +106,14 @@ STAT_OF_KIND = {
 }
 
 OFFENSIVE = frozenset({DAMAGE, POISON, SHACKLE_MP, SHACKLE_TP})
+SUPPORT = frozenset({HEAL, ABS_SHIELD, REL_SHIELD}) | frozenset(STAT_OF_KIND)  # castables sur soi / un allié
+
+# Masque de cibles d'un effet (Effect.Target.*).
+T_ENEMIES = 1
+T_ALLIES = 2
+T_CASTER = 4
+T_NON_SUMMONS = 8
+T_SUMMONS = 16
 SELF_ADDITIVE = frozenset({HEAL, ABS_SHIELD, REL_SHIELD})
 STAT_BUFFS = frozenset(STAT_OF_KIND)
 SELF_CONTEXT = STAT_BUFFS | {BUFF_MP, BUFF_TP}
@@ -130,6 +138,21 @@ class Skill:
     item: Any = None  # objet Weapon / Chip du moteur (None dans les tests)
     available: bool = True  # cooldown à 0 ce tour
     raw: bool = False  # valeur brute (effets RAW_*) : pas d'amplification par la caractéristique
+    targets: int = 31  # masque Effect.Target.* de l'effet principal
+
+    def can_target(self, target: Any, is_self: bool) -> bool:
+        """`target` = Ent (attributs `enemy`, `summoned`)."""
+        m = self.targets
+        if is_self:
+            return bool(m & T_CASTER) and self.min_range == 0
+        if target.enemy:
+            if not m & T_ENEMIES:
+                return False
+        elif not m & T_ALLIES:
+            return False
+        if target.summoned:
+            return bool(m & T_SUMMONS)
+        return bool(m & T_NON_SUMMONS)
 
     @property
     def avg(self) -> float:
@@ -149,6 +172,7 @@ def skill_from_item(item: Any, is_weapon: bool, prefix: str = "") -> Skill | Non
     min_v = max_v = 0.0
     turns = 0
     raw = False
+    targets = 31
     for f in item.features:
         ftype = f.type
         k = KIND_OF_EFFECT.get(ftype)
@@ -161,6 +185,7 @@ def skill_from_item(item: Any, is_weapon: bool, prefix: str = "") -> Skill | Non
             kind = k
             min_v, max_v, turns = float(f.minValue), float(f.maxValue), int(f.turns)
             raw = ftype in RAW_EFFECTS
+            targets = int(f.targets)
         elif k == kind:
             min_v += float(f.minValue)
             max_v += float(f.maxValue)
@@ -188,6 +213,7 @@ def skill_from_item(item: Any, is_weapon: bool, prefix: str = "") -> Skill | Non
         turns=turns,
         item=item,
         raw=raw,
+        targets=targets,
     )
 
 
@@ -203,7 +229,9 @@ def refresh(skill: Skill) -> Skill:
 
 def make(key: str, kind: str, cost: int, min_range: int, max_range: int, min_v: float, max_v: float,
          *, launch: int = 7, los: bool = True, max_uses: int = 1, turns: int = 0, is_weapon: bool = False,
-         area: int = 1, available: bool = True, raw: bool = False) -> Skill:
-    """Constructeur court pour les tests et les fixtures."""
+         area: int = 1, available: bool = True, raw: bool = False, targets: int | None = None) -> Skill:
+    """Constructeur court pour les tests et les fixtures (cibles : alliés + soi pour le support, sinon tout)."""
+    if targets is None:
+        targets = (T_ALLIES | T_CASTER | T_NON_SUMMONS | T_SUMMONS) if kind in SUPPORT else 31
     return Skill(key, kind, is_weapon, cost, min_range, max_range, launch, los, area, max_uses,
-                 float(min_v), float(max_v), turns, None, available, raw)
+                 float(min_v), float(max_v), turns, None, available, raw, targets)

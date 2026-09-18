@@ -15,8 +15,11 @@ DEBUG = True
 # Profil de base : équilibré. Les poids sont en PV (cf docs/planner.md).
 # Budget : `budget` est une part de System.maxOperations (cœurs × 1 M). Avec beaucoup de cœurs, le vrai
 # plafond est le wall-clock de 5 s/tour : 0.25 sur 20 cœurs = 5 M d'ops, dépensés en profondeur de recherche.
+# En équipe : `w_ally` = valeur d'un PV soigné/protégé/gagné sur un allié ; `ally_weights` par nom (le carry
+# vaut plus, un bulbe moins). Sans entrée, chaque allié vaut w_ally.
 BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30,
-               max_stops=3, beam=16, k_walk=8, refine_plans=6, budget=0.25)
+               max_stops=3, beam=16, k_walk=8, refine_plans=6, budget=0.25,
+               w_ally=1.0, ally_weights={})
 
 scores: list[float] = []  # persiste entre les tours (les globales survivent, cf docs/runtime.md)
 

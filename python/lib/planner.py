@@ -29,6 +29,7 @@ from skills import (
     SHACKLE_TP,
     STAT_BUFFS,
     STAT_OF_KIND,
+    SUPPORT,
     TELEPORT,
     Skill,
 )
@@ -75,10 +76,16 @@ class Plan:
     alive: dict[int, tuple[str, float]] = field(default_factory=dict)
     end_via: str = "walk"
     pressure: float = 0.0
+    lethal: bool = False
+    rel_mult: float = 1.0  # Π(1 − bouclier relatif) posés ce tour
+    abs_block: float = 0.0  # boucliers absolus posés ce tour × coups
+    life_after: float = 0.0  # PV après soins du tour
 
     def describe(self) -> str:
         acts = " ; ".join(str(a) for a in self.actions)
-        return f"score={self.score:.0f} value={self.value:.0f} danger={self.danger:.0f} kills={self.kills} [{acts}] {self.note}"
+        flag = " LÉTAL" if self.lethal else ""
+        return (f"score={self.score:.0f} value={self.value:.0f} danger={self.danger:.0f}{flag} "
+                f"kills={self.kills} [{acts}] {self.note}")
 
 
 @dataclass(frozen=True)
@@ -205,16 +212,18 @@ class Planner:
             out.append((me2, [Action("chip", skill=sk, target=me.id)], bonus))
         return out
 
-    def stat_gain(self, sk: Skill, me: Ent) -> float:
-        """Gain d'alpha (dégâts max par tour) apporté par un buff de caractéristique, caché par (skill, me)."""
-        key = (sk.key, me.strength, me.magic, me.agility, me.power)
+    def stat_gain(self, sk: Skill, ent: Ent) -> float:
+        """Gain d'alpha (dégâts max par tour) qu'un buff de caractéristique lancé par moi apporte à `ent`
+        (moi ou un allié), caché par (skill, stats de la cible)."""
+        key = (sk.key, ent.id, ent.strength, ent.magic, ent.agility, ent.power, ent.max_tp)
         cache = self.__dict__.setdefault("_gain", {})
         g = cache.get(key)
         if g is None:
+            me = self.w.me
             stat = STAT_OF_KIND[sk.kind]
             amount = sk.avg if sk.raw else formulas.buff(sk.avg, me.science, me.power)
-            me2 = replace(me, **{stat: getattr(me, stat) + int(amount)})
-            g = max(0.0, self.d.my_alpha(me2) - self.d.my_alpha(me))
+            ent2 = replace(ent, **{stat: getattr(ent, stat) + int(amount)})
+            g = max(0.0, self.d.alpha_of(ent2) - self.d.alpha_of(ent))
             cache[key] = g
         return g
 
@@ -253,21 +262,61 @@ class Planner:
                     elif c in tp_ring and not blocked[c]:
                         tp_cands[c] = tp_cands.get(c, 0.0) + v
             for cands, k in ((walk_cands, self.p.k_walk), (tp_cands, self.p.k_tp)):
-                ranked = sorted(cands, key=lambda c: cands[c] - self.p.w_safety * self.d.at(c), reverse=True)
-                kept: list[int] = []
-                for c in ranked:
-                    if any(self.can_hit(c, sk, e.cell) for sk in offensive):
-                        kept.append(c)
-                        ub[c] = ub.get(c, 0.0) + cands[c]
-                        if len(kept) >= k:
-                            break
+                kept = self.keep(cands, k, lambda c, e=e: any(self.can_hit(c, sk, e.cell) for sk in offensive))
+                for c in kept:
+                    ub[c] = ub.get(c, 0.0) + cands[c]
                 per_enemy.append((kept, []))
+        # Support : cases d'où un soin / bouclier / buff atteint un allié (valeur : ce qu'il en tirerait).
+        support = [s for s in me.skills if s.kind in SUPPORT and s.available and s.cost <= me.tp]
+        for a in self.w.allies:
+            wa = self.p.w_ally * self.p.ally_weights.get(a.name, 1.0)
+            if wa <= 0:
+                continue
+            exp_a = self.d.danger_vs(a, a.cell)
+            cands: dict[int, float] = {}
+            for sk in support:
+                if not sk.can_target(a, False):
+                    continue
+                if sk.kind == HEAL:
+                    v = min(self.heal_value(sk, me), a.max_life - a.life)
+                elif sk.kind in (ABS_SHIELD, REL_SHIELD):
+                    v = self.absorbed(sk, self.shield_value(sk, me), exp_a)
+                else:
+                    v = self.d.engage(a.cell) * self.stat_gain(sk, a) * self.future_turns(sk.turns)
+                v *= wa
+                if v <= 0:
+                    continue
+                for c in self.grid.ring(a.cell, sk.min_range, sk.max_range, sk.launch):
+                    if c in reach0 or (c in tp_ring and not blocked[c]):
+                        cands[c] = cands.get(c, 0.0) + v
+            kept = self.keep(cands, self.p.k_walk,
+                             lambda c, a=a: any(self.can_hit(c, sk, a.cell) for sk in support if sk.can_target(a, False)))
+            for c in kept:
+                ub[c] = ub.get(c, 0.0) + cands[c]
+            per_enemy.append((kept, []))
         cells = {me.cell}
         for kept, _ in per_enemy:
             cells.update(kept)
         ub.setdefault(me.cell, 0.0)
         ordered = sorted(cells, key=lambda c: ub[c] - self.p.w_safety * self.d.at(c), reverse=True)
         return ordered, ub
+
+    def keep(self, cands: dict[int, float], k: int, ok) -> list[int]:
+        """Garde k cases : les meilleures par `valeur − w_safety × danger` (cases sûres d'abord), en
+        garantissant les 2 meilleures par valeur brute (une case dangereuse mais décisive doit être
+        évaluée : le score final tranchera). `ok(c)` vérifie la LOS sur les cases retenues seulement."""
+        by_rank = sorted(cands, key=lambda c: cands[c] - self.p.w_safety * self.d.at(c), reverse=True)
+        by_value = sorted(cands, key=lambda c: cands[c], reverse=True)
+        kept: list[int] = []
+        for c in by_value[:2]:
+            if ok(c):
+                kept.append(c)
+        for c in by_rank:
+            if len(kept) >= k:
+                break
+            if c not in kept and ok(c):
+                kept.append(c)
+        return kept
 
     # ---- recherche ---------------------------------------------------------------------------------
 
@@ -325,6 +374,11 @@ class Planner:
                 best_c, best_o, best_danger = c, o, danger
         if best_c != plan.end_cell or best_danger != plan.danger:
             plan.score += ws * (plan.danger - best_danger) + wp * (pfield[best_c] - plan.pressure)
+            incoming = max(0.0, best_danger * plan.rel_mult - plan.abs_block)
+            lethal = incoming >= plan.life_after * self.p.lethal_margin
+            if plan.lethal and not lethal:
+                plan.score += self.p.w_death
+            plan.lethal = lethal
             plan.danger = best_danger
             plan.pressure = pfield[best_c]
             plan.end_cell = best_c
@@ -381,9 +435,8 @@ class Planner:
         stops = seq.stops
         tp = seq.tp_left
         last_i = len(stops) - 1
-        groups: list[list[tuple[int, float, tuple]]] = []  # (coût, valeur, payload) — hors boucliers
-        shields: list[Skill] = []  # valorisés contre le danger de la case FINALE, connue après le repli
-        buffs: list[Skill] = []  # buffs de stat (hors celui du contexte) : valeur = engagement × gain futur
+        groups: list[list[tuple[int, float, tuple]]] = []  # (coût, valeur, payload) — offensif seulement
+        support: list[Skill] = []  # soins, boucliers, buffs (soi / alliés) : 2e passe, case finale connue
         shackles: list[tuple[Skill, int, Ent, float]] = []  # (skill, stop, ennemi, montant)
         in_prefix = {a.skill.key for a in prefix if a.skill is not None}
         for sk in me.skills:
@@ -404,14 +457,9 @@ class Planner:
                                     for n in range(1, sk.uses_cap(tp - switch) + 1))
                 if opts:
                     groups.append(opts)
-            elif sk.kind == HEAL:
-                v = min(self.heal_value(sk, me), me.max_life - me.life)
-                if v > 0:
-                    groups.append([(sk.cost, v, (sk, last_i, me.id, 1, 0.0))])
-            elif sk.kind in (ABS_SHIELD, REL_SHIELD):
-                shields.append(sk)
-            elif sk.kind in STAT_BUFFS and sk.turns > 1:
-                buffs.append(sk)
+            elif sk.kind in SUPPORT:
+                if sk.kind not in STAT_BUFFS or sk.turns > 1:
+                    support.append(sk)
             elif sk.kind in (SHACKLE_MP, SHACKLE_TP):
                 for si, st in enumerate(stops):
                     for e in self.w.enemies:
@@ -433,15 +481,32 @@ class Planner:
             ks = Knapsack(tp_v)
             ks.add(groups)
             value, chosen, kills, alive, end = self.allocate(seq, me, ks, forced, tp_v, alive0)
-            if shields or buffs:
-                extra = self.self_groups(shields, buffs, me, end[0], alive, last_i)
+            if support:
+                extra = self.support_groups(support, me, seq, end[0], alive)
                 if extra:
                     ks.add(extra)
                     value, chosen, kills, alive, end = self.allocate(seq, me, ks, forced, tp_v, alive0,
                                                                     prev=(kills, end))
+            # Létal : dégâts attendus après mes protections vs mes PV. Si des protections peuvent l'éviter,
+            # passe de survie : boucliers et soins prennent un crédit `w_death` proportionnel à ce qu'ils
+            # absorbent — ils peuvent alors déplacer des PT pris aux attaques.
+            lethal, survival = self.lethal_check(chosen, end[1], me)
+            if lethal and any(sk.kind not in STAT_BUFFS for sk in support):
+                ks2 = Knapsack(tp_v)
+                ks2.add(groups)
+                ks2.add(self.support_groups(support, me, seq, end[0], alive, death_credit=self.p.w_death))
+                v2, c2, k2, a2, e2 = self.allocate(seq, me, ks2, forced, tp_v, alive0, prev=(kills, end))
+                l2, s2 = self.lethal_check(c2, e2[1], me)
+                score1 = value - self.p.w_death
+                score2 = v2 - (self.p.w_death if l2 else 0.0)
+                if score2 > score1:
+                    value, chosen, kills, alive, end, lethal, survival = v2, c2, k2, a2, e2, l2, s2
             end_cell, end_danger, end_pressure, end_via = end
-            score = value - self.p.w_safety * end_danger + self.p.w_pressure * end_pressure \
-                + self.p.w_kill * len(kills)
+            score = value - self.p.w_safety * end_danger + self.p.w_pressure * end_pressure
+            for k in kills:
+                score += self.p.w_kill + self.d.alpha(self.d.enemies[k]) * self.future_turns(2)
+            if lethal:
+                score -= self.p.w_death
             if seq.teleport_used or end_via == VIA_TELEPORT:
                 score -= self.p.w_tp_reserve
             if best is not None and score <= best.score:
@@ -451,44 +516,95 @@ class Planner:
                         note=f"pression={end_pressure:.0f} stops={[s.cell for s in stops]} "
                              f"var={var[0].key if var else '-'}",
                         seq=seq, me=me, prefix=prefix, chosen=chosen, alive=alive, end_via=end_via,
-                        pressure=end_pressure)
+                        pressure=end_pressure, lethal=lethal, rel_mult=survival[0], abs_block=survival[1],
+                        life_after=survival[2])
             self.finalists.append(best)
         return best
 
-    def self_groups(self, shields: list[Skill], buffs: list[Skill], me: Ent, end_cell: int,
-                    alive: dict[int, tuple[str, float]], stop: int) -> list[list[tuple[int, float, tuple]]]:
-        """Groupes de sac à dos pour les skills sur soi, une fois la case finale connue.
+    def support_groups(self, support: list[Skill], me: Ent, seq: Seq, end_cell: int,
+                       alive: dict[int, tuple[str, float]], death_credit: float = 0.0
+                       ) -> list[list[tuple[int, float, tuple]]]:
+        """Un groupe par skill de support, options = sur moi (depuis le dernier arrêt) et sur chaque allié
+        à portée d'un arrêt. Case finale connue → l'exposition est réelle.
 
-        Boucliers : valorisés contre l'exposition (danger réel, ou alpha ennemi × probabilité d'engagement :
-        on se protège AVANT le one-shot), à rendement décroissant — le k-ième bouclier ne réduit que ce qui
-        reste après les k−1 meilleurs, et prend un facteur `w_stack^(k−1)` pour en garder pour plus tard
-        (cooldowns désynchronisés). Buffs de stat : engagement × gain d'alpha × tours futurs décotés."""
-        groups: list[list[tuple[int, float, tuple]]] = []
-        exposure = self.d.exposure(end_cell, alive) if (shields or buffs) else 0.0
+        Boucliers sur moi : contre l'exposition (danger réel, ou alpha ennemi × probabilité d'engagement :
+        on se protège AVANT le one-shot), à rendement décroissant — le k-ième ne réduit que ce qui reste
+        après les k−1 meilleurs, × `w_stack^(k−1)` pour en garder pour plus tard. Soins : PV rendus. Buffs de
+        stat : engagement × gain d'alpha × tours futurs décotés. Sur un allié : mêmes valeurs avec son
+        exposition / ses PV / son alpha, × `w_ally` × son poids, + crédit létal s'il peut mourir.
+        `death_credit` (passe de survie) : crédit par PV absorbé sur moi."""
+        stops = seq.stops
+        last_i = len(stops) - 1
+        p = self.p
+        options: dict[str, list[tuple[int, float, tuple]]] = {sk.key: [] for sk in support}
+
+        # --- sur moi
+        exposure = self.d.exposure(end_cell, alive)
+        credit = 1.0 + death_credit / max(1.0, exposure)
+        shields = sorted((sk for sk in support if sk.kind in (ABS_SHIELD, REL_SHIELD) and sk.can_target(me, True)),
+                         key=lambda s: s.key)
         if shields and exposure > 0:
-            def absorbed(sk: Skill, raw: float, dmg: float) -> float:
-                """Part de `dmg` absorbée par le bouclier : absolu par coup (×HITS_PER_TURN), relatif en %."""
-                return min(dmg, HITS_PER_TURN * raw) if sk.kind == ABS_SHIELD else dmg * min(100.0, raw) / 100.0
-
             rated = [(sk, self.shield_value(sk, me)) for sk in shields]
-            rated.sort(key=lambda r: absorbed(r[0], r[1], exposure), reverse=True)
+            rated.sort(key=lambda r: self.absorbed(r[0], r[1], exposure), reverse=True)
             residual = exposure
             stack = 1.0
             for sk, raw in rated:
-                v = absorbed(sk, raw, residual)
+                v = self.absorbed(sk, raw, residual)
                 residual -= v
-                v *= stack * (1.0 + self.future_turns(max(0, sk.turns - 1)) * 0.5)
-                stack *= self.p.w_stack
+                v *= stack * (1.0 + self.future_turns(max(0, sk.turns - 1)) * 0.5) * credit
+                stack *= p.w_stack
                 if v > 0:
-                    groups.append([(sk.cost, v, (sk, stop, me.id, 1, 0.0))])
-        if buffs:
-            engage = self.d.engage(end_cell, alive)
-            if engage > 0:
-                for sk in buffs:
-                    v = engage * self.stat_gain(sk, me) * self.future_turns(sk.turns - 1)
-                    if v > 0:
-                        groups.append([(sk.cost, v, (sk, stop, me.id, 1, 0.0))])
-        return groups
+                    options[sk.key].append((sk.cost, v, (sk, last_i, me.id, 1, 0.0)))
+        engage_me: float | None = None
+        for sk in support:
+            if not sk.can_target(me, True) or sk.kind in (ABS_SHIELD, REL_SHIELD):
+                continue
+            if sk.kind == HEAL:
+                v = min(self.heal_value(sk, me), me.max_life - me.life) * credit
+            else:
+                if engage_me is None:
+                    engage_me = self.d.engage(end_cell, alive)
+                v = engage_me * self.stat_gain(sk, me) * self.future_turns(sk.turns - 1)
+            if v > 0:
+                options[sk.key].append((sk.cost, v, (sk, last_i, me.id, 1, 0.0)))
+
+        # --- sur les alliés
+        for a in self.w.allies:
+            wa = p.w_ally * p.ally_weights.get(a.name, 1.0)
+            if wa <= 0:
+                continue
+            reachable = [sk for sk in support if sk.can_target(a, False)]
+            if not reachable:
+                continue
+            exp_a: float | None = None
+            for sk in reachable:
+                si = next((i for i, st in enumerate(stops) if self.can_hit(st.cell, sk, a.cell)), None)
+                if si is None:
+                    continue
+                if sk.kind == HEAL:
+                    v = min(self.heal_value(sk, me), a.max_life - a.life)
+                    if exp_a is None:
+                        exp_a = self.d.danger_vs(a, a.cell, alive)
+                    if exp_a >= a.life * p.lethal_margin:
+                        v *= 1.0 + p.w_death / max(1.0, exp_a)
+                elif sk.kind in (ABS_SHIELD, REL_SHIELD):
+                    if exp_a is None:
+                        exp_a = self.d.danger_vs(a, a.cell, alive)
+                    v = self.absorbed(sk, self.shield_value(sk, me), exp_a)
+                    v *= 1.0 + self.future_turns(max(0, sk.turns - 1)) * 0.5
+                    if exp_a >= a.life * p.lethal_margin:
+                        v *= 1.0 + p.w_death / max(1.0, exp_a)
+                else:
+                    v = self.d.engage(a.cell, alive) * self.stat_gain(sk, a) * self.future_turns(sk.turns)
+                v *= wa
+                if v > 0:
+                    options[sk.key].append((sk.cost, v, (sk, si, a.id, 1, 0.0)))
+        return [opts for opts in options.values() if opts]
+
+    @staticmethod
+    def absorbed(sk: Skill, raw: float, dmg: float) -> float:
+        """Part de `dmg` absorbée par un bouclier : absolu par coup (× HITS_PER_TURN), relatif en %."""
+        return min(dmg, HITS_PER_TURN * raw) if sk.kind == ABS_SHIELD else dmg * min(100.0, raw) / 100.0
 
     def allocate(self, seq: Seq, me: Ent, ks: "Knapsack", forced: list[tuple],
                  tp_v: int, alive0: dict[int, tuple[str, float]],
@@ -514,6 +630,21 @@ class Planner:
             end = self.retreat(seq, alive, tp_after)
         return value, chosen, kills, alive, end
 
+    def lethal_check(self, chosen: list[tuple], danger: float, me: Ent) -> tuple[bool, tuple[float, float, float]]:
+        """(létal ?, (Π(1 − relatifs), absolus × coups, PV après soins)) pour les protections choisies."""
+        rel_mult = 1.0
+        abs_block = 0.0
+        life = float(me.life)
+        for sk, _si, _tid, _n, _raw in chosen:
+            if sk.kind == REL_SHIELD:
+                rel_mult *= 1.0 - min(100.0, self.shield_value(sk, me)) / 100.0
+            elif sk.kind == ABS_SHIELD:
+                abs_block += HITS_PER_TURN * self.shield_value(sk, me)
+            elif sk.kind == HEAL:
+                life = min(float(me.max_life), life + self.heal_value(sk, me))
+        incoming = max(0.0, danger * rel_mult - abs_block)
+        return incoming >= life * self.p.lethal_margin, (rel_mult, abs_block, life)
+
     @staticmethod
     def heal_value(sk: Skill, me: Ent) -> float:
         return sk.avg if sk.raw else formulas.heal(sk.avg, me.wisdom, me.power)
@@ -525,13 +656,23 @@ class Planner:
     @property
     def self_bonus(self) -> float:
         """Valeur max des skills sur soi (soin, boucliers) — pour la borne sup."""
+        cached = self.__dict__.get("_self_bonus")
+        if cached is not None:
+            return cached
         me = self.w.me
         b = 0.0
         for sk in me.skills:
-            if sk.kind == HEAL and sk.available:
-                b += min(self.heal_value(sk, me), me.max_life - me.life)
-            elif sk.kind in (ABS_SHIELD, REL_SHIELD) and sk.available:
+            if not sk.available:
+                continue
+            if sk.kind == HEAL:
+                b += max([min(self.heal_value(sk, me), me.max_life - me.life)]
+                         + [min(self.heal_value(sk, me), a.max_life - a.life) for a in self.w.allies])
+            elif sk.kind in (ABS_SHIELD, REL_SHIELD):
                 b += HITS_PER_TURN * self.shield_value(sk, me)
+            elif sk.kind in STAT_BUFFS:
+                b += self.stat_gain(sk, me) * self.future_turns(sk.turns)
+        b *= max([self.p.w_ally, 1.0] + list(self.p.ally_weights.values()))
+        self.__dict__["_self_bonus"] = b
         return b
 
     def spent(self, chosen: list[tuple], me: Ent) -> int:

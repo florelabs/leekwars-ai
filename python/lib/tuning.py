@@ -2,19 +2,23 @@
 # (nommé tuning.py : `profile` est un module de la stdlib, qui prime sur les fichiers de l'IA.)
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Profile:
     # Pondérations, toutes en PV : score = valeur − w_safety × danger + w_kill × kills − w_tp_reserve × téléport.
     w_safety: float = 1.0  # 1 = un PV reçu vaut un PV infligé ; > 1 prudent, < 1 agressif
-    w_kill: float = 150.0  # bonus fixe par ennemi tué (en PV)
+    w_kill: float = 150.0  # bonus fixe par ennemi tué (en PV), + son alpha sur les tours futurs
+    w_death: float = 1000.0  # malus si les dégâts attendus sur la case finale peuvent me tuer
+    lethal_margin: float = 0.8  # létal si dégâts attendus (après mes protections) ≥ marge × PV
     w_low_life: float = 0.5  # focus : dégâts sur une cible à 0 % de vie valent (1 + w_low_life) fois plus
     w_threat: float = 0.5  # priorité à ce qui fait mal : × (1 + w_threat × alpha(e) / alpha max)
     w_summon: float = 0.4  # multiplicateur des dégâts sur une invocation (bulbe)
     w_finish: float = 1.3  # multiplicateur si je peux le tuer ce tour (vie ≤ mon alpha sur lui)
     w_focus: float = 1.2  # multiplicateur sur la cible principale du tour précédent (persistance)
+    w_ally: float = 1.0  # valeur d'un PV soigné / protégé / gagné sur un allié, relativement à moi
+    ally_weights: dict[str, float] = field(default_factory=dict)  # par nom d'allié (carry : 1.5, bulbe : 0.3)
     w_tp_reserve: float = 30.0  # malus d'utilisation de la téléportation (cooldown 10)
     w_pressure: float = 0.5  # valeur des dégâts que JE pourrais infliger au prochain tour depuis la case finale
     w_stack: float = 0.6  # rendement de chaque bouclier supplémentaire posé le même tour (en garder pour plus tard)

@@ -199,6 +199,44 @@ class Danger:
             self._depth = depth
         return depth
 
+    # ---- alliés ------------------------------------------------------------------------------------
+
+    def danger_vs(self, target: Ent, cell: int, alive: dict[int, tuple[str, float]] | None = None) -> float:
+        """Danger d'une case pour un ALLIÉ (ses boucliers, pas les miens) : réutilise les champs de distance
+        des ennemis, seul le sac à dos de dégâts est recalculé (caché par ennemi × cible)."""
+        cache = self.__dict__.setdefault("_dmg_vs", {})
+        ids = alive if alive is not None else {e.id: (BASE, 0.0) for e in self.enemies.values()}
+        total = 0.0
+        for eid, (variant, amount) in ids.items():
+            e = self.enemies.get(eid)
+            if e is None:
+                continue
+            self.field(e, variant, amount)  # garantit _dist[e.id]
+            ev = self.variant_of(e, variant, amount)
+            key = (eid, variant, target.id)
+            dmg = cache.get(key)
+            if dmg is None:
+                dmg = damage_by_range(ev, target, ev.max_tp, self.poison_discount)
+                cache[key] = dmg
+            d = self._dist[eid][cell]
+            if d < len(dmg) - 1:
+                total += dmg[d]
+        return total
+
+    def alpha_of(self, ent: Ent) -> float:
+        """Dégâts max en un tour (PT max) de `ent` sur l'ennemi le plus rentable (caché sur ses stats)."""
+        cache = self.__dict__.setdefault("_alpha_of", {})
+        key = (ent.id, ent.strength, ent.magic, ent.agility, ent.power, ent.max_tp)
+        a = cache.get(key)
+        if a is None:
+            a = 0.0
+            for e in self.enemies.values():
+                v = damage_by_range(ent, e, ent.max_tp, self.poison_discount)[0]
+                if v > a:
+                    a = v
+            cache[key] = a
+        return a
+
     # ---- pression moi → ennemi, engagement -----------------------------------------------------------
 
     def my_alpha_vs(self, e: Ent) -> float:
