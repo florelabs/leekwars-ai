@@ -19,6 +19,10 @@ class Profile:
     w_focus: float = 1.2  # multiplicateur sur la cible principale du tour précédent (persistance)
     w_ally: float = 1.0  # valeur d'un PV soigné / protégé / gagné sur un allié, relativement à moi
     ally_weights: dict[str, float] = field(default_factory=dict)  # par nom d'allié (carry : 1.5, bulbe : 0.3)
+    w_team_focus: float = 1.3  # multiplicateur sur la cible annoncée par l'équipe (canal)
+    engage_share: float = 0.3  # j'annonce l'engagement si mon plan vaut ≥ cette part de mon alpha, ou tue
+    poison_cap: float = 0.5  # au-delà de cette part des PV de la cible déjà en poison…
+    w_poison_overflow: float = 0.25  # …un poison supplémentaire ne vaut plus que ça (antidote probable)
     w_tp_reserve: float = 30.0  # malus d'utilisation de la téléportation (cooldown 10)
     w_pressure: float = 0.5  # valeur des dégâts que JE pourrais infliger au prochain tour depuis la case finale
     w_stack: float = 0.6  # rendement de chaque bouclier supplémentaire posé le même tour (en garder pour plus tard)

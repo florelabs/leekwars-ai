@@ -107,10 +107,12 @@ class Danger:
         self._reach: dict[tuple[int, str], dict[int, int]] = {}
         self._combined: dict[tuple, list[float]] = {}
         self._dist: dict[int, list[int]] = {}  # champ de distance à la zone atteignable de chaque ennemi (base)
+        self._dist_v: dict[tuple[int, str], list[int]] = {}  # idem par variante d'état
         self._depth: list[int] | None = None
         self._my_dmg: dict[int, list[float]] = {}  # mes dégâts par distance, par ennemi
         self._pressure: list[float] | None = None
         self.enemies: dict[int, Ent] = {e.id: e for e in world.enemies}
+        self.forced_engage = bool(world.team and world.team.engaged)  # l'équipe a engagé : le combat est lancé
 
     # ---- danger ennemi → moi ------------------------------------------------------------------------
 
@@ -135,6 +137,7 @@ class Danger:
         self._reach[key] = reach
         dist = dist_field(self.grid, list(reach))
         self._dist.setdefault(e.id, dist)
+        self._dist_v[key] = dist
         dmg_at = damage_by_range(e, world.me, e.max_tp, self.poison_discount)
         self._alpha[key] = dmg_at[0]
         out = [0.0] * self.grid.n
@@ -211,17 +214,27 @@ class Danger:
             e = self.enemies.get(eid)
             if e is None:
                 continue
-            self.field(e, variant, amount)  # garantit _dist[e.id]
+            self.field(e, variant, amount)  # garantit _dist_v[(e.id, variant)]
             ev = self.variant_of(e, variant, amount)
             key = (eid, variant, target.id)
             dmg = cache.get(key)
             if dmg is None:
                 dmg = damage_by_range(ev, target, ev.max_tp, self.poison_discount)
                 cache[key] = dmg
-            d = self._dist[eid][cell]
+            d = self._dist_v[(eid, variant)][cell]
             if d < len(dmg) - 1:
                 total += dmg[d]
         return total
+
+    def alpha_vs(self, e: Ent, target: Ent) -> float:
+        """Dégâts max de l'ennemi `e` en un tour sur `target` (allié) s'il est à portée."""
+        cache = self.__dict__.setdefault("_dmg_vs", {})
+        key = (e.id, BASE, target.id)
+        dmg = cache.get(key)
+        if dmg is None:
+            dmg = damage_by_range(e, target, e.max_tp, self.poison_discount)
+            cache[key] = dmg
+        return dmg[0]
 
     def alpha_of(self, ent: Ent) -> float:
         """Dégâts max en un tour (PT max) de `ent` sur l'ennemi le plus rentable (caché sur ses stats)."""
@@ -289,8 +302,8 @@ class Danger:
     def engage(self, cell: int, alive: dict[int, tuple[str, float]] | None = None) -> float:
         """∈ [0, 1] : à quel point un échange est probable au prochain tour si je finis sur `cell`.
         1 si un ennemi peut m'atteindre (map de danger, ou téléportation + mobilité + portée), sinon la part
-        de mon alpha que je pourrais placer depuis là."""
-        if self.at(cell, alive) > 0:
+        de mon alpha que je pourrais placer depuis là. 1 partout si l'équipe a annoncé l'engagement."""
+        if self.forced_engage or self.at(cell, alive) > 0:
             return 1.0
         ids = alive.keys() if alive is not None else self.enemies.keys()
         for eid in ids:

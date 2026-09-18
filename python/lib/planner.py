@@ -121,11 +121,39 @@ class Planner:
         self._tp_ring: dict[int, list[int]] = {}
         self.evaluations = 0
         self.finalists: list[Plan] = []
+        self.ally_w: dict[int, float] = {a.id: profile.w_ally * profile.ally_weights.get(a.name, 1.0)
+                                         for a in world.allies}
         self.target_w: dict[int, float] = self.target_weights()
         self.tp_skill: Skill | None = None
         for s in world.me.skills:
             if s.kind == TELEPORT and s.available and s.cost <= world.me.tp and not world.teleport_used:
                 self.tp_skill = s
+
+    # ---- menace d'équipe ---------------------------------------------------------------------------
+
+    def threat(self, e: Ent) -> float:
+        """Ce que `e` peut infliger en un tour à sa meilleure cible dans MON équipe : max(alpha sur moi,
+        alpha sur chaque allié × son poids). Sert au bonus de kill et à la priorisation."""
+        cache = self.__dict__.setdefault("_threat", {})
+        t = cache.get(e.id)
+        if t is None:
+            t = self.d.alpha(e)
+            for a in self.w.allies:
+                v = self.ally_w.get(a.id, 0.0) * self.d.alpha_vs(e, a)
+                if v > t:
+                    t = v
+            cache[e.id] = t
+        return t
+
+    def ally_relief(self, alive_base: dict[int, tuple[str, float]], alive: dict[int, tuple[str, float]]) -> float:
+        """Danger retiré à mes alliés (pondéré) par une entrave ou un kill : Σ_a w_a × (danger_vs base − après)."""
+        total = 0.0
+        for a in self.w.allies:
+            wa = self.ally_w.get(a.id, 0.0)
+            if wa <= 0:
+                continue
+            total += wa * (self.d.danger_vs(a, a.cell, alive_base) - self.d.danger_vs(a, a.cell, alive))
+        return total
 
     # ---- priorisation de cible ---------------------------------------------------------------------
 
@@ -137,7 +165,7 @@ class Planner:
         enemies = self.w.enemies
         if not enemies:
             return {}
-        alphas = {e.id: self.d.alpha(e) for e in enemies}
+        alphas = {e.id: self.threat(e) for e in enemies}
         max_alpha = max(alphas.values()) or 1.0
         out: dict[int, float] = {}
         for e in enemies:
@@ -148,6 +176,8 @@ class Planner:
                 w *= p.w_finish
             if focus["target"] == e.id:
                 w *= p.w_focus
+            if self.w.team is not None and self.w.team.focus == e.id:
+                w *= p.w_team_focus
             out[e.id] = w
         return out
 
@@ -453,6 +483,8 @@ class Planner:
                         if v1 <= 0:
                             continue
                         mult = self.target_w[e.id] * (1.0 + self.p.w_low_life * (1.0 - e.life / e.max_life))
+                        if sk.kind == POISON and e.poison_load >= e.life * self.p.poison_cap:
+                            mult *= self.p.w_poison_overflow  # déjà chargé : un antidote effacerait tout
                         opts.extend((n * sk.cost + switch, n * v1 * mult, (sk, si, e.id, n, n * v1))
                                     for n in range(1, sk.uses_cap(tp - switch) + 1))
                 if opts:
@@ -467,6 +499,7 @@ class Planner:
                             shackles.append((sk, si, e, formulas.shackle(sk.avg, me.magic, me.power)))
                             break
         variants: list[tuple[Skill, int, Ent, float] | None] = [None, *shackles]
+        alive_base: dict[int, tuple[str, float]] = {e.id: (BASE, 0.0) for e in self.w.enemies}
         for var in variants:
             tp_v = tp
             forced: list[tuple] = []
@@ -504,7 +537,10 @@ class Planner:
             end_cell, end_danger, end_pressure, end_via = end
             score = value - self.p.w_safety * end_danger + self.p.w_pressure * end_pressure
             for k in kills:
-                score += self.p.w_kill + self.d.alpha(self.d.enemies[k]) * self.future_turns(2)
+                score += self.p.w_kill + self.threat(self.d.enemies[k]) * self.future_turns(2)
+            if self.w.allies and (var is not None or kills):
+                # Entrave ou kill : le danger retiré aux alliés au prochain tour compte comme le mien.
+                score += self.p.w_safety * self.ally_relief(alive_base, alive)
             if lethal:
                 score -= self.p.w_death
             if seq.teleport_used or end_via == VIA_TELEPORT:

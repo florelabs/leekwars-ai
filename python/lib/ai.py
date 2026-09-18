@@ -5,7 +5,7 @@
 # En local : `npx pyright` le vérifie (bot/ est dans extraPaths), les tests de la lib sont dans tests/.
 
 from danger import Danger
-from executor import execute
+from executor import announce, execute
 from planner import Plan, Planner
 from tuning import Phases, Profile
 from world import World, snapshot
@@ -101,6 +101,7 @@ def turn() -> None:
             plan = planner.plan()
         with phases.phase("exec"):
             execute(world, plan, DEBUG)
+            announce(world, plan, planner, profile)
         if DEBUG:
             show_danger(world, danger)
             Debug.log(f"T{world.turn} safety={profile.w_safety} {plan.describe()}")

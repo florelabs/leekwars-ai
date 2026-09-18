@@ -8,7 +8,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from geometry import Grid
-from skills import Skill, refresh, skill_from_item
+from skills import E_POISON, Skill, refresh, skill_from_item
+from team import TeamState
 
 NUM_CELLS = 613
 
@@ -37,6 +38,7 @@ class Ent:
     name: str = ""
     skills: list[Skill] = field(default_factory=list)
     weapon_key: str | None = None  # arme équipée (clé de skill), pour le coût de changement d'arme
+    poison_load: float = 0.0  # PV de poison déjà actifs sur l'entité (Σ valeur × tours restants)
     ref: Any = None  # objet Entity du moteur (None dans les tests)
 
     def __post_init__(self) -> None:
@@ -58,6 +60,7 @@ class World:
     max_ops: int = 1_000_000
     turn: int = 1
     teleport_used: bool = False
+    team: TeamState | None = None  # rapports des alliés (canal), None en solo / tests
 
     def __post_init__(self) -> None:
         if not self.blocked:
@@ -124,6 +127,14 @@ def _skills_of(e: Any, is_me: bool) -> list[Skill]:
     return cached
 
 
+def _poison_load(e: Any) -> float:
+    total = 0.0
+    for eff in e.effects:  # 25 ops + lectures
+        if eff.type == E_POISON:
+            total += eff.value * max(1, eff.turns)
+    return total
+
+
 def _ent(e: Any, is_me: bool, enemy: bool) -> Ent:
     w = e.weapon
     return Ent(
@@ -132,6 +143,7 @@ def _ent(e: Any, is_me: bool, enemy: bool) -> Ent:
         science=e.science, power=e.power, abs_shield=e.absoluteShield, rel_shield=e.relativeShield,
         enemy=enemy, summoned=e.summoned, name=e.name, skills=_skills_of(e, is_me),
         weapon_key=("w:" + w.name) if w is not None else None, ref=e,
+        poison_load=_poison_load(e) if enemy else 0.0,
     )
 
 
@@ -154,7 +166,14 @@ def snapshot() -> World:
     me = _ent(me_ref, True, False)
     enemies = [_ent(e, False, True) for e in Fight.getAliveEnemies()]
     allies = [_ent(a, False, False) for a in Fight.getAliveAllies() if a.id != me.id]
+    turn = Fight.turn
+    team: TeamState | None = None
+    if allies:
+        team = TeamState(turn)
+        for m in Network.getMessages():
+            if m.type == Message.Type.CUSTOM and m.author is not None and m.author.id != me.id:
+                team.add(m.author.id, m.params)
     return World(
         grid=_grid, me=me, enemies=enemies, allies=allies, los=_los,
-        ops=lambda: System.operations, max_ops=System.maxOperations, turn=Fight.turn,
+        ops=lambda: System.operations, max_ops=System.maxOperations, turn=turn, team=team,
     )

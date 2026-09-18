@@ -4,7 +4,9 @@
 # case il faut passer un objet `Cell` (→ moveTowardCell). On vérifie l'arrivée après chaque déplacement et
 # on explique chaque échec d'attaque en mode debug (distance, LOS) : un tour raté doit se lire dans le journal.
 
-from planner import Action, Plan
+from planner import Action, Plan, Planner, focus
+from team import TeamState
+from tuning import Profile
 from world import World
 
 
@@ -30,6 +32,15 @@ def execute(world: World, plan: Plan, debug: bool = False) -> None:
             r = me.useChip(a.skill.item, a.target)
             if r <= 0:
                 _explain(me, a, r)
+
+
+def announce(world: World, plan: Plan, planner: Planner, profile: Profile) -> None:
+    """Publie à l'équipe (40 ops) ma cible principale et si j'ai engagé : un kill, ou un plan qui vaut au
+    moins `engage_share` de mon alpha."""
+    if not world.allies:
+        return
+    engaged = bool(plan.kills) or plan.value >= profile.engage_share * max(1.0, planner.d.my_alpha())
+    Network.sendAll(Message.Type.CUSTOM, TeamState.encode(world.turn, focus["target"], engaged))
 
 
 def _use_weapon(me: Me, a: Action) -> None:
