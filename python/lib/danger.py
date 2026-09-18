@@ -108,7 +108,7 @@ class Danger:
         self._dist: dict[int, list[int]] = {}  # champ de distance à la zone atteignable de chaque ennemi (base)
         self._depth: list[int] | None = None
         self._my_dmg: dict[int, list[float]] = {}  # mes dégâts par distance, par ennemi
-        self._pressure: dict[int, float] = {}
+        self._pressure: list[float] | None = None
         self.enemies: dict[int, Ent] = {e.id: e for e in world.enemies}
 
     # ---- danger ennemi → moi ------------------------------------------------------------------------
@@ -209,24 +209,33 @@ class Danger:
                 best = v
         return best
 
-    def pressure(self, cell: int) -> float:
-        """Dégâts que je pourrais infliger au prochain tour depuis `cell` (PM/PT max, obstacles ignorés)."""
-        p = self._pressure.get(cell)
+    def pressure_field(self) -> list[float]:
+        """Pour chaque case : dégâts que je pourrais infliger au prochain tour si j'y termine (PM/PT max,
+        obstacles ignorés, meilleur ennemi). Une passe sur la grille par tour."""
+        p = self._pressure
         if p is None:
             me = self.world.me
-            p = 0.0
+            n = self.grid.n
+            p = [0.0] * n
+            xy = self.grid.xy
             for e in self.enemies.values():
-                dmg = self._my_dmg.get(e.id)
-                if dmg is None:
-                    dmg = damage_by_range(me, e, me.max_tp, self.poison_discount)
-                    self._my_dmg[e.id] = dmg
-                d = self.grid.dist(cell, e.cell) - me.max_mp
-                if d < 0:
-                    d = 0
-                if d < len(dmg) - 1 and dmg[d] > p:
-                    p = dmg[d]
-            self._pressure[cell] = p
+                dmg = damage_by_range(me, e, me.max_tp, self.poison_discount)
+                self._my_dmg[e.id] = dmg
+                last = len(dmg) - 1
+                ex, ey = xy[e.cell]
+                mp = me.max_mp
+                for c in range(n):
+                    x, y = xy[c]
+                    d = abs(x - ex) + abs(y - ey) - mp
+                    if d < 0:
+                        d = 0
+                    if d < last and dmg[d] > p[c]:
+                        p[c] = dmg[d]
+            self._pressure = p
         return p
+
+    def pressure(self, cell: int) -> float:
+        return self.pressure_field()[cell]
 
     def engage(self, cell: int, alive: dict[int, tuple[str, float]] | None = None) -> float:
         """∈ [0, 1] : à quel point un échange est probable au prochain tour si je finis sur `cell`.
@@ -234,7 +243,6 @@ class Danger:
         de mon alpha que je pourrais placer depuis là."""
         if self.at(cell, alive) > 0:
             return 1.0
-        me = self.world.me
         ids = alive.keys() if alive is not None else self.enemies.keys()
         for eid in ids:
             e = self.enemies.get(eid)
