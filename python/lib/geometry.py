@@ -75,6 +75,28 @@ class Grid:
                 obstacle.append(ch == "#")
         return cls(xy, obstacle)
 
+    def cover_field(self) -> list[int]:
+        """Pour chaque case, nombre d'obstacles à distance ≤ 2 (statique, calculé une fois) : proxy de
+        « cachette »."""
+        field = self.__dict__.get("_cover")
+        if field is None:
+            by = self.by_xy
+            obstacle = self.obstacle
+            offsets = [(dx, dy) for dx in range(-2, 3) for dy in range(-2 + abs(dx), 3 - abs(dx))]
+            field = [0] * self.n
+            for c, (cx, cy) in enumerate(self.xy):
+                v = 0
+                for dx, dy in offsets:
+                    j = by.get((cx + dx, cy + dy))
+                    if j is not None and obstacle[j]:
+                        v += 1
+                field[c] = v
+            self.__dict__["_cover"] = field
+        return field
+
+    def cover(self, c: int) -> int:
+        return self.cover_field()[c]
+
     def dist(self, a: int, b: int) -> int:
         ax, ay = self.xy[a]
         bx, by = self.xy[b]

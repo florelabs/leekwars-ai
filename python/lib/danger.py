@@ -17,7 +17,7 @@
 from dataclasses import replace
 
 import formulas
-from geometry import INF, Grid, bfs_walk, dist_field
+from geometry import INF, LAUNCH_CIRCLE, Grid, bfs_walk, dist_field, launch_ok
 from skills import BUFF_MP, DAMAGE, POISON, TELEPORT, Skill
 from world import Ent, World
 
@@ -104,6 +104,7 @@ class Danger:
         self.poison_discount = poison_discount
         self._fields: dict[tuple[int, str], list[float]] = {}
         self._alpha: dict[tuple[int, str], float] = {}
+        self._reach: dict[tuple[int, str], dict[int, int]] = {}
         self._combined: dict[tuple, list[float]] = {}
         self._dist: dict[int, list[int]] = {}  # champ de distance à la zone atteignable de chaque ennemi (base)
         self._depth: list[int] | None = None
@@ -131,6 +132,7 @@ class Danger:
     def _compute(self, e: Ent, key: tuple[int, str]) -> list[float]:
         world = self.world
         reach = bfs_walk(self.grid, {e.cell: 0}, mobility(e), world.blocked_for(e))
+        self._reach[key] = reach
         dist = dist_field(self.grid, list(reach))
         self._dist.setdefault(e.id, dist)
         dmg_at = damage_by_range(e, world.me, e.max_tp, self.poison_discount)
@@ -255,6 +257,59 @@ class Danger:
                 return 1.0
         alpha = self.my_alpha()
         return min(1.0, self.pressure(cell) / alpha) if alpha > 0 else 0.0
+
+    def refined(self, cell: int, alive: dict[int, tuple[str, float]] | None = None, max_los: int = 40) -> float:
+        """Danger de `cell` avec la VRAIE ligne de vue ennemie : un skill à LOS ne compte que s'il existe une
+        case atteignable par l'ennemi, à portée, qui voit `cell`. Coûte jusqu'à `max_los` × 31 ops par
+        ennemi ; au-delà du plafond on retombe sur l'estimation pessimiste. Toujours ≤ `at(cell)`."""
+        if alive is None:
+            alive = {e.id: (BASE, 0.0) for e in self.enemies.values()}
+        grid = self.grid
+        los = self.world.los
+        me = self.world.me
+        total = 0.0
+        for eid, (variant, amount) in alive.items():
+            e = self.enemies.get(eid)
+            if e is None:
+                continue
+            field = self.field(e, variant, amount)
+            if field[cell] == 0.0:
+                continue
+            ev = self.variant_of(e, variant, amount)
+            reach = self._reach[(e.id, variant)]
+            xy = grid.xy
+            cx, cy = xy[cell]
+            # Cases atteignables triées par distance à `cell` (calcul inline : c'est la boucle chaude).
+            by_dist = sorted((abs(xy[r][0] - cx) + abs(xy[r][1] - cy), r) for r in reach)
+            options = []
+            budget = max_los
+            for sk in ev.skills:
+                if sk.kind not in (DAMAGE, POISON) or not sk.available:
+                    continue
+                v = unit_damage(sk, ev, me, self.poison_discount)
+                if v <= 0:
+                    continue
+                hit = False
+                circle = sk.launch == LAUNCH_CIRCLE
+                for dist, r in by_dist:
+                    if dist > sk.max_range:
+                        break
+                    if dist < sk.min_range:
+                        continue
+                    if not circle and not launch_ok(sk.launch, cx - xy[r][0], cy - xy[r][1]):
+                        continue
+                    if not sk.los or budget <= 0:  # sans LOS, ou plafond atteint : pessimiste
+                        hit = True
+                        break
+                    budget -= 1
+                    if los(r, cell):
+                        hit = True
+                        break
+                if hit:
+                    options.append((sk.cost, v, sk.max_uses))
+            if options:
+                total += best_spend(options, ev.max_tp)
+        return total
 
     def exposure(self, cell: int, alive: dict[int, tuple[str, float]] | None = None) -> float:
         """Dégâts contre lesquels se protéger si je finis sur `cell` : danger réel, ou alpha ennemi pondéré par

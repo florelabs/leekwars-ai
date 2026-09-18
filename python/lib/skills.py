@@ -23,12 +23,20 @@ E_SUMMON = 14
 E_SHACKLE_MP = 17
 E_SHACKLE_TP = 18
 E_SHACKLE_STRENGTH = 19
+E_BUFF_RESISTANCE = 21
+E_BUFF_WISDOM = 22
 E_LIFE_DAMAGE = 28
 E_NOVA_DAMAGE = 30
 E_RAW_BUFF_MP = 31  # bottes de cuir : valeur brute, non amplifiée par la science
 E_RAW_BUFF_TP = 32  # adrénaline
 E_RAW_ABSOLUTE_SHIELD = 37
 E_RAW_BUFF_STRENGTH = 38  # protéine
+E_RAW_BUFF_MAGIC = 39  # wizardry
+E_RAW_BUFF_SCIENCE = 40
+E_RAW_BUFF_AGILITY = 41  # stretching, warm_up
+E_RAW_BUFF_RESISTANCE = 42  # solidification
+E_RAW_BUFF_WISDOM = 44  # knowledge
+E_RAW_BUFF_POWER = 52
 E_RAW_RELATIVE_SHIELD = 54
 E_RAW_HEAL = 57
 E_STEAL_LIFE = 61
@@ -40,6 +48,12 @@ HEAL = "heal"
 ABS_SHIELD = "abs_shield"
 REL_SHIELD = "rel_shield"
 BUFF_STRENGTH = "buff_strength"
+BUFF_MAGIC = "buff_magic"
+BUFF_AGILITY = "buff_agility"
+BUFF_WISDOM = "buff_wisdom"
+BUFF_RESISTANCE = "buff_resistance"
+BUFF_SCIENCE = "buff_science"
+BUFF_POWER = "buff_power"
 BUFF_MP = "buff_mp"
 BUFF_TP = "buff_tp"
 SHACKLE_MP = "shackle_mp"
@@ -56,6 +70,15 @@ KIND_OF_EFFECT = {
     E_ABSOLUTE_SHIELD: ABS_SHIELD,
     E_RELATIVE_SHIELD: REL_SHIELD,
     E_BUFF_STRENGTH: BUFF_STRENGTH,
+    E_BUFF_AGILITY: BUFF_AGILITY,
+    E_BUFF_WISDOM: BUFF_WISDOM,
+    E_BUFF_RESISTANCE: BUFF_RESISTANCE,
+    E_RAW_BUFF_MAGIC: BUFF_MAGIC,
+    E_RAW_BUFF_SCIENCE: BUFF_SCIENCE,
+    E_RAW_BUFF_AGILITY: BUFF_AGILITY,
+    E_RAW_BUFF_RESISTANCE: BUFF_RESISTANCE,
+    E_RAW_BUFF_WISDOM: BUFF_WISDOM,
+    E_RAW_BUFF_POWER: BUFF_POWER,
     E_BUFF_MP: BUFF_MP,
     E_BUFF_TP: BUFF_TP,
     E_SHACKLE_MP: SHACKLE_MP,
@@ -69,11 +92,23 @@ KIND_OF_EFFECT = {
     E_RAW_HEAL: HEAL,
 }
 RAW_EFFECTS = frozenset({E_RAW_BUFF_MP, E_RAW_BUFF_TP, E_RAW_ABSOLUTE_SHIELD, E_RAW_BUFF_STRENGTH,
-                         E_RAW_RELATIVE_SHIELD, E_RAW_HEAL})
+                         E_RAW_RELATIVE_SHIELD, E_RAW_HEAL, E_RAW_BUFF_MAGIC, E_RAW_BUFF_SCIENCE,
+                         E_RAW_BUFF_AGILITY, E_RAW_BUFF_RESISTANCE, E_RAW_BUFF_WISDOM, E_RAW_BUFF_POWER})
+# Buff de caractéristique → attribut de `Ent` à augmenter dans le contexte.
+STAT_OF_KIND = {
+    BUFF_STRENGTH: "strength",
+    BUFF_MAGIC: "magic",
+    BUFF_AGILITY: "agility",
+    BUFF_WISDOM: "wisdom",
+    BUFF_RESISTANCE: "resistance",
+    BUFF_SCIENCE: "science",
+    BUFF_POWER: "power",
+}
 
 OFFENSIVE = frozenset({DAMAGE, POISON, SHACKLE_MP, SHACKLE_TP})
 SELF_ADDITIVE = frozenset({HEAL, ABS_SHIELD, REL_SHIELD})
-SELF_CONTEXT = frozenset({BUFF_STRENGTH, BUFF_MP, BUFF_TP})
+STAT_BUFFS = frozenset(STAT_OF_KIND)
+SELF_CONTEXT = STAT_BUFFS | {BUFF_MP, BUFF_TP}
 ENEMY_VARIANT = frozenset({SHACKLE_MP, SHACKLE_TP})
 
 
@@ -120,11 +155,15 @@ def skill_from_item(item: Any, is_weapon: bool, prefix: str = "") -> Skill | Non
         if k is None:
             continue
         # Un item porte parfois plusieurs effets (destroyer : dégâts + entrave force) : on garde le premier
-        # effet connu, sauf si un effet de dégâts arrive ensuite (il domine pour le scoring).
+        # effet connu, sauf si un effet de dégâts arrive ensuite (il domine pour le scoring). Deux effets du
+        # même genre (rempart, carapace) s'additionnent.
         if kind == OTHER or (k == DAMAGE and kind != DAMAGE):
             kind = k
             min_v, max_v, turns = float(f.minValue), float(f.maxValue), int(f.turns)
             raw = ftype in RAW_EFFECTS
+        elif k == kind:
+            min_v += float(f.minValue)
+            max_v += float(f.maxValue)
     if kind == OTHER:
         return None
     if is_weapon:
