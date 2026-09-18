@@ -145,6 +145,22 @@ _STAT_ATTR = {0: "life", 1: "tp", 2: "mp", 3: "strength", 4: "agility", 6: "wisd
 _bulb_cache: dict[int, Ent] = {}
 
 
+def _foreign_get(raw: Any, key: int) -> Any:
+    """Lecture tolérante d'une Map de jeu marshallée (clé int, sinon str, sinon .get)."""
+    for k in (key, str(key)):
+        try:
+            return raw[k]
+        except (KeyError, TypeError, IndexError):
+            pass
+    get = getattr(raw, "get", None)
+    if get is not None:
+        try:
+            return get(key)
+        except (KeyError, TypeError):
+            return None
+    return None
+
+
 def bulb_prototype(chip: Any, skill: Skill, level: int) -> Ent:
     """Ent du bulbe qu'invoquerait `chip` à mon niveau : stats = floor(min + (max − min) × min(300, lvl) / 300),
     puces = `bulbChips`. ~600 ops (features des puces), une fois par combat et par puce."""
@@ -153,11 +169,16 @@ def bulb_prototype(chip: Any, skill: Skill, level: int) -> Ent:
         return proto
     stats: dict[str, int] = {}
     k = min(300, level) / 300.0
-    for sid, rng in dict(chip.bulbStats).items():
-        attr = _STAT_ATTR.get(int(sid))
-        if attr is not None:
-            lo, hi = rng[0], rng[1]
-            stats[attr] = int(lo + (hi - lo) * k)
+    raw = chip.bulbStats  # Map de jeu = ForeignObject (ProxyObject) : pas itérable, on lit par clés connues
+    for sid, attr in _STAT_ATTR.items():
+        rng = _foreign_get(raw, sid)
+        if rng is None:
+            continue
+        try:
+            lo, hi = float(rng[0]), float(rng[1])
+        except (TypeError, IndexError, KeyError, ValueError):
+            continue
+        stats[attr] = int(lo + (hi - lo) * k)
     skills: list[Skill] = []
     for c in chip.bulbChips:
         sk = skill_from_item(c, False)
