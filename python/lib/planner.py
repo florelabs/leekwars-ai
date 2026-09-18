@@ -140,24 +140,40 @@ class Planner:
 
     # ---- contextes ---------------------------------------------------------------------------------
 
-    def contexts(self) -> list[tuple[Ent, list[Action]]]:
+    def contexts(self) -> list[tuple[Ent, list[Action], float]]:
+        """(me dérivé, actions préalables, bonus) — le bonus est la valeur anticipée du buff sur ses tours
+        suivants, pondérée par la probabilité d'engagement depuis ma case : on se buffe AVANT le contact."""
         me = self.w.me
-        out: list[tuple[Ent, list[Action]]] = [(me, [])]
+        out: list[tuple[Ent, list[Action], float]] = [(me, [], 0.0)]
+        engage = self.d.engage(me.cell)
         for sk in me.skills:
             if sk.kind not in SELF_CONTEXT or not sk.available or sk.cost > me.tp:
                 continue
             tp = me.tp - sk.cost
             amount = sk.avg if sk.raw else formulas.buff(sk.avg, me.science, me.power)
+            bonus = 0.0
             if sk.kind == BUFF_STRENGTH:
                 me2 = replace(me, tp=tp, strength=me.strength + int(amount))
+                if sk.turns > 1 and engage > 0:
+                    gain = self.d.my_alpha(me2) - self.d.my_alpha(me)
+                    bonus = engage * gain * self.future_turns(sk.turns - 1)
             elif sk.kind == BUFF_MP:
                 me2 = replace(me, tp=tp, mp=me.mp + round(amount))
             elif sk.kind == BUFF_TP:
                 me2 = replace(me, tp=tp + round(amount))
             else:
                 continue
-            out.append((me2, [Action("chip", skill=sk, target=me.id)]))
+            out.append((me2, [Action("chip", skill=sk, target=me.id)], bonus))
         return out
+
+    def future_turns(self, n: int) -> float:
+        """Poids cumulé de n tours futurs (géométrique, `future_discount`)."""
+        total = 0.0
+        w = self.p.future_discount
+        for _ in range(n):
+            total += w
+            w *= self.p.future_discount
+        return total
 
     # ---- candidats ---------------------------------------------------------------------------------
 
@@ -205,10 +221,12 @@ class Planner:
 
     def plan(self) -> Plan:
         best: Plan | None = None
-        for me, prefix in self.contexts():
+        for me, prefix, bonus in self.contexts():
             plan = self.plan_ctx(me, prefix)
-            if plan is not None and (best is None or plan.score > best.score):
-                best = plan
+            if plan is not None:
+                plan.score += bonus
+                if best is None or plan.score > best.score:
+                    best = plan
             if self.over_budget():
                 break
         return best or Plan([], 0.0, note="rien à faire")
@@ -308,33 +326,39 @@ class Planner:
                 alive0[e.id] = (SHACKLED_MP if sk.kind == SHACKLE_MP else SHACKLED_TP, amount)
             # Passe 1 : sans boucliers → repli → danger final. Passe 2 (si utile) : boucliers valorisés contre
             # ce danger, sac à dos relancé (ils peuvent déplacer des PT pris aux attaques).
-            value, chosen, kills, _alive, end = self.allocate(seq, me, groups, forced, tp_v, alive0)
-            if shields and end[1] > 0:
+            value, chosen, kills, alive, end = self.allocate(seq, me, groups, forced, tp_v, alive0)
+            if shields:
+                # Exposition = danger réel de la case finale, ou alpha ennemi × probabilité d'engagement
+                # (téléportation adverse, contact imminent) : on se protège AVANT de se faire one-shot.
+                exposure = self.d.exposure(end[0], alive)
                 shield_groups = []
                 for sk in shields:
                     if sk.kind == ABS_SHIELD:
-                        v = min(end[1], HITS_PER_TURN * self.shield_value(sk, me))
+                        v = min(exposure, HITS_PER_TURN * self.shield_value(sk, me))
                     else:
-                        v = end[1] * min(100.0, self.shield_value(sk, me)) / 100.0
+                        v = exposure * min(100.0, self.shield_value(sk, me)) / 100.0
+                    v *= 1.0 + self.future_turns(max(0, sk.turns - 1)) * 0.5  # les tours suivants comptent un peu
                     if v > 0:
                         shield_groups.append([(sk.cost, v, (sk, last_i, me.id, 1, 0.0))])
                 if shield_groups:
-                    value, chosen, kills, _alive, end = self.allocate(seq, me, groups + shield_groups, forced, tp_v,
-                                                                     alive0)
-            end_cell, end_danger, end_via = end
-            score = value - self.p.w_safety * end_danger + self.p.w_kill * len(kills)
+                    value, chosen, kills, alive, end = self.allocate(seq, me, groups + shield_groups, forced, tp_v,
+                                                                    alive0)
+            end_cell, end_danger, end_pressure, end_via = end
+            score = value - self.p.w_safety * end_danger + self.p.w_pressure * end_pressure \
+                + self.p.w_kill * len(kills)
             if seq.teleport_used or end_via == VIA_TELEPORT:
                 score -= self.p.w_tp_reserve
             if best is not None and score <= best.score:
                 continue
             actions = self.build_actions(seq, prefix, chosen, end_cell, end_via, me)
             best = Plan(actions, score, value, end_danger, end_cell, kills,
-                        note=f"stops={[s.cell for s in stops]} var={var[0].key if var else '-'}")
+                        note=f"pression={end_pressure:.0f} stops={[s.cell for s in stops]} "
+                             f"var={var[0].key if var else '-'}")
         return best
 
     def allocate(self, seq: Seq, me: Ent, groups: list[list[tuple[int, float, tuple]]], forced: list[tuple],
                  tp_v: int, alive0: dict[int, tuple[str, float]]) -> tuple[
-                     float, list[tuple], list[int], dict[int, tuple[str, float]], tuple[int, float, str]]:
+                     float, list[tuple], list[int], dict[int, tuple[str, float]], tuple[int, float, float, str]]:
         """Sac à dos + kills + repli pour un jeu de groupes : (valeur, choix, kills, ennemis restants, fin)."""
         value, chosen = group_knapsack(groups, tp_v)
         chosen = chosen + forced
@@ -381,31 +405,38 @@ class Planner:
                 tp += 1
         return tp
 
-    def retreat(self, seq: Seq, alive: dict[int, tuple[str, float]], tp_left: int) -> tuple[int, float, str]:
-        """Case finale : min danger parmi les cases à pied (PM restants), tie-break distance à l'ennemi."""
+    def retreat(self, seq: Seq, alive: dict[int, tuple[str, float]], tp_left: int) -> tuple[int, float, float, str]:
+        """Case finale : minimise `w_safety × danger − w_pressure × pression` parmi les cases à pied (PM
+        restants), tie-break distance à la zone ennemie. Renvoie (case, danger, pression, via)."""
         last = seq.last
         d = self.d
         field = d.combined(alive)
-        best_c, best_v = last, field[last]
+        ws, wp = self.p.w_safety, self.p.w_pressure
+        pressure = d.pressure
+
+        def objective(c: int) -> float:
+            return ws * field[c] - wp * pressure(c)
+
+        best_c, best_o = last, objective(last)
         if seq.mp_left > 0:
             depth = d.depth()
             mp_left = seq.mp_left
             for c, cost in self.reach_from(last, mp_left).items():
                 if cost > mp_left:
                     continue
-                v = field[c]
-                if v < best_v or (v == best_v and depth[c] > depth[best_c]):
-                    best_c, best_v = c, v
+                o = objective(c)
+                if o < best_o or (o == best_o and depth[c] > depth[best_c]):
+                    best_c, best_o = c, o
         via = WALK
-        if self.tp_skill and not seq.teleport_used and tp_left >= self.tp_skill.cost and best_v > 0:
-            tp_c, tp_v = best_c, best_v
+        if self.tp_skill and not seq.teleport_used and tp_left >= self.tp_skill.cost and field[best_c] > 0:
+            tp_c, tp_o = best_c, best_o
             for c in self.teleport_targets(last):
-                v = field[c]
-                if v < tp_v:
-                    tp_c, tp_v = c, v
-            if best_v - tp_v > self.p.w_tp_reserve:
-                best_c, best_v, via = tp_c, tp_v, VIA_TELEPORT
-        return best_c, best_v, via
+                o = objective(c)
+                if o < tp_o:
+                    tp_c, tp_o = c, o
+            if best_o - tp_o > self.p.w_tp_reserve:
+                best_c, best_o, via = tp_c, tp_o, VIA_TELEPORT
+        return best_c, field[best_c], pressure(best_c), via
 
     def build_actions(self, seq: Seq, prefix: list[Action], chosen: list[tuple], end_cell: int, end_via: str,
                       me: Ent) -> list[Action]:

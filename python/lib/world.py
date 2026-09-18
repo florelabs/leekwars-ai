@@ -21,6 +21,8 @@ class Ent:
     max_life: int
     tp: int
     mp: int
+    max_tp: int = -1  # -1 = tp (projections au prochain tour : les PT/PM se rechargent)
+    max_mp: int = -1
     strength: int = 0
     magic: int = 0
     agility: int = 0
@@ -36,6 +38,12 @@ class Ent:
     skills: list[Skill] = field(default_factory=list)
     weapon_key: str | None = None  # arme équipée (clé de skill), pour le coût de changement d'arme
     ref: Any = None  # objet Entity du moteur (None dans les tests)
+
+    def __post_init__(self) -> None:
+        if self.max_tp < 0:
+            self.max_tp = self.tp
+        if self.max_mp < 0:
+            self.max_mp = self.mp
 
 
 @dataclass
@@ -119,7 +127,7 @@ def _skills_of(e: Any, is_me: bool) -> list[Skill]:
 def _ent(e: Any, is_me: bool, enemy: bool) -> Ent:
     w = e.weapon
     return Ent(
-        id=e.id, cell=e.cell.id, life=e.life, max_life=e.maxLife, tp=e.tp, mp=e.mp,
+        id=e.id, cell=e.cell.id, life=e.life, max_life=e.maxLife, tp=e.tp, mp=e.mp, max_tp=e.maxTP, max_mp=e.maxMP,
         strength=e.strength, magic=e.magic, agility=e.agility, wisdom=e.wisdom, resistance=e.resistance,
         science=e.science, power=e.power, abs_shield=e.absoluteShield, rel_shield=e.relativeShield,
         enemy=enemy, summoned=e.summoned, name=e.name, skills=_skills_of(e, is_me),

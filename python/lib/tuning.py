@@ -12,7 +12,9 @@ class Profile:
     w_kill: float = 150.0  # bonus fixe par ennemi tué (en PV)
     w_low_life: float = 0.5  # focus : dégâts sur une cible à 0 % de vie valent (1 + w_low_life) fois plus
     w_tp_reserve: float = 30.0  # malus d'utilisation de la téléportation (cooldown 10)
+    w_pressure: float = 0.5  # valeur des dégâts que JE pourrais infliger au prochain tour depuis la case finale
     poison_discount: float = 0.7  # valeur des tours futurs d'un poison (géométrique)
+    future_discount: float = 0.7  # valeur d'un tour futur pour les buffs multi-tours (protéine, boucliers)
     # Bornes de recherche.
     max_stops: int = 2  # arrêts (cases d'où on agit) par tour ; 1 = move → act → move
     beam: int = 8  # séquences conservées par profondeur
