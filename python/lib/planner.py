@@ -262,9 +262,9 @@ class Planner:
         self.evaluations += 1
         stops = seq.stops
         tp = seq.tp_left
-        last = seq.last
-        danger_last = self.d.at(last)
-        groups: list[list[tuple[int, float, tuple]]] = []  # (coût, valeur, payload)
+        last_i = len(stops) - 1
+        groups: list[list[tuple[int, float, tuple]]] = []  # (coût, valeur, payload) — hors boucliers
+        shields: list[Skill] = []  # valorisés contre le danger de la case FINALE, connue après le repli
         shackles: list[tuple[Skill, int, Ent, float]] = []  # (skill, stop, ennemi, montant)
         for sk in me.skills:
             if not sk.available or sk.cost > tp:
@@ -287,15 +287,9 @@ class Planner:
             elif sk.kind == HEAL:
                 v = min(self.heal_value(sk, me), me.max_life - me.life)
                 if v > 0:
-                    groups.append([(sk.cost, v, (sk, len(stops) - 1, me.id, 1, 0.0))])
-            elif sk.kind == ABS_SHIELD:
-                v = min(danger_last, HITS_PER_TURN * self.shield_value(sk, me))
-                if v > 0:
-                    groups.append([(sk.cost, v, (sk, len(stops) - 1, me.id, 1, 0.0))])
-            elif sk.kind == REL_SHIELD:
-                v = danger_last * min(100.0, self.shield_value(sk, me)) / 100.0
-                if v > 0:
-                    groups.append([(sk.cost, v, (sk, len(stops) - 1, me.id, 1, 0.0))])
+                    groups.append([(sk.cost, v, (sk, last_i, me.id, 1, 0.0))])
+            elif sk.kind in (ABS_SHIELD, REL_SHIELD):
+                shields.append(sk)
             elif sk.kind in (SHACKLE_MP, SHACKLE_TP):
                 for si, st in enumerate(stops):
                     for e in self.w.enemies:
@@ -306,24 +300,28 @@ class Planner:
         for var in variants:
             tp_v = tp
             forced: list[tuple] = []
-            alive: dict[int, tuple[str, float]] = {e.id: (BASE, 0.0) for e in self.w.enemies}
+            alive0: dict[int, tuple[str, float]] = {e.id: (BASE, 0.0) for e in self.w.enemies}
             if var is not None:
                 sk, si, e, amount = var
                 tp_v -= sk.cost
                 forced.append((sk, si, e.id, 1, 0.0))
-                alive[e.id] = (SHACKLED_MP if sk.kind == SHACKLE_MP else SHACKLED_TP, amount)
-            value, chosen = group_knapsack(groups, tp_v)
-            chosen = chosen + forced
-            # Kills : dégâts bruts cumulés par cible (les poisons ne tuent pas ce tour : on ne compte que DAMAGE).
-            dealt: dict[int, float] = {}
-            for sk, _si, tid, _n, raw in chosen:
-                if sk.kind == DAMAGE:
-                    dealt[tid] = dealt.get(tid, 0.0) + raw
-            kills = [e.id for e in self.w.enemies if dealt.get(e.id, 0.0) >= e.life]
-            for k in kills:
-                alive.pop(k, None)
-            tp_after = tp_v - self.spent(chosen, me)
-            end_cell, end_danger, end_via = self.retreat(seq, alive, tp_after)
+                alive0[e.id] = (SHACKLED_MP if sk.kind == SHACKLE_MP else SHACKLED_TP, amount)
+            # Passe 1 : sans boucliers → repli → danger final. Passe 2 (si utile) : boucliers valorisés contre
+            # ce danger, sac à dos relancé (ils peuvent déplacer des PT pris aux attaques).
+            value, chosen, kills, _alive, end = self.allocate(seq, me, groups, forced, tp_v, alive0)
+            if shields and end[1] > 0:
+                shield_groups = []
+                for sk in shields:
+                    if sk.kind == ABS_SHIELD:
+                        v = min(end[1], HITS_PER_TURN * self.shield_value(sk, me))
+                    else:
+                        v = end[1] * min(100.0, self.shield_value(sk, me)) / 100.0
+                    if v > 0:
+                        shield_groups.append([(sk.cost, v, (sk, last_i, me.id, 1, 0.0))])
+                if shield_groups:
+                    value, chosen, kills, _alive, end = self.allocate(seq, me, groups + shield_groups, forced, tp_v,
+                                                                     alive0)
+            end_cell, end_danger, end_via = end
             score = value - self.p.w_safety * end_danger + self.p.w_kill * len(kills)
             if seq.teleport_used or end_via == VIA_TELEPORT:
                 score -= self.p.w_tp_reserve
@@ -333,6 +331,25 @@ class Planner:
             best = Plan(actions, score, value, end_danger, end_cell, kills,
                         note=f"stops={[s.cell for s in stops]} var={var[0].key if var else '-'}")
         return best
+
+    def allocate(self, seq: Seq, me: Ent, groups: list[list[tuple[int, float, tuple]]], forced: list[tuple],
+                 tp_v: int, alive0: dict[int, tuple[str, float]]) -> tuple[
+                     float, list[tuple], list[int], dict[int, tuple[str, float]], tuple[int, float, str]]:
+        """Sac à dos + kills + repli pour un jeu de groupes : (valeur, choix, kills, ennemis restants, fin)."""
+        value, chosen = group_knapsack(groups, tp_v)
+        chosen = chosen + forced
+        # Kills : dégâts bruts cumulés par cible (les poisons ne tuent pas ce tour : on ne compte que DAMAGE).
+        dealt: dict[int, float] = {}
+        for sk, _si, tid, _n, raw in chosen:
+            if sk.kind == DAMAGE:
+                dealt[tid] = dealt.get(tid, 0.0) + raw
+        kills = [e.id for e in self.w.enemies if dealt.get(e.id, 0.0) >= e.life]
+        alive = dict(alive0)
+        for k in kills:
+            alive.pop(k, None)
+        tp_after = tp_v - self.spent(chosen, me)
+        end = self.retreat(seq, alive, tp_after)
+        return value, chosen, kills, alive, end
 
     @staticmethod
     def heal_value(sk: Skill, me: Ent) -> float:
