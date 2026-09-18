@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from geometry import Grid
-from skills import E_POISON, Skill, refresh, skill_from_item
+from skills import E_POISON, SUMMON, Skill, refresh, skill_from_item
 from team import TeamState
 
 NUM_CELLS = 613
@@ -39,6 +39,7 @@ class Ent:
     skills: list[Skill] = field(default_factory=list)
     weapon_key: str | None = None  # arme équipée (clé de skill), pour le coût de changement d'arme
     poison_load: float = 0.0  # PV de poison déjà actifs sur l'entité (Σ valeur × tours restants)
+    level: int = 300
     ref: Any = None  # objet Entity du moteur (None dans les tests)
 
     def __post_init__(self) -> None:
@@ -61,6 +62,9 @@ class World:
     turn: int = 1
     teleport_used: bool = False
     team: TeamState | None = None  # rapports des alliés (canal), None en solo / tests
+    bulbs: dict[str, Ent] = field(default_factory=dict)  # prototype du bulbe par clé de puce d'invocation
+    summon_count: int = 0  # mes invocations vivantes
+    summon_limit: int = 8
 
     def __post_init__(self) -> None:
         if not self.blocked:
@@ -135,6 +139,40 @@ def _poison_load(e: Any) -> float:
     return total
 
 
+# Ids STAT_* → attribut de Ent (bulbStats est indexé par ces ids).
+_STAT_ATTR = {0: "life", 1: "tp", 2: "mp", 3: "strength", 4: "agility", 6: "wisdom", 11: "resistance",
+              12: "science", 13: "magic", 15: "power"}
+_bulb_cache: dict[int, Ent] = {}
+
+
+def bulb_prototype(chip: Any, skill: Skill, level: int) -> Ent:
+    """Ent du bulbe qu'invoquerait `chip` à mon niveau : stats = floor(min + (max − min) × min(300, lvl) / 300),
+    puces = `bulbChips`. ~600 ops (features des puces), une fois par combat et par puce."""
+    proto = _bulb_cache.get(chip.id)
+    if proto is not None:
+        return proto
+    stats: dict[str, int] = {}
+    k = min(300, level) / 300.0
+    for sid, rng in dict(chip.bulbStats).items():
+        attr = _STAT_ATTR.get(int(sid))
+        if attr is not None:
+            lo, hi = rng[0], rng[1]
+            stats[attr] = int(lo + (hi - lo) * k)
+    skills: list[Skill] = []
+    for c in chip.bulbChips:
+        sk = skill_from_item(c, False)
+        if sk is not None:
+            skills.append(sk)
+    life = stats.get("life", 100)
+    g = stats.get
+    proto = Ent(id=-1000 - chip.id, cell=-1, life=life, max_life=life, tp=g("tp", 4), mp=g("mp", 3),
+                strength=g("strength", 0), magic=g("magic", 0), agility=g("agility", 0), wisdom=g("wisdom", 0),
+                resistance=g("resistance", 0), science=g("science", 0), power=g("power", 0),
+                enemy=False, summoned=True, name=skill.key, skills=skills, level=level)
+    _bulb_cache[chip.id] = proto
+    return proto
+
+
 def _ent(e: Any, is_me: bool, enemy: bool) -> Ent:
     w = e.weapon
     return Ent(
@@ -143,7 +181,7 @@ def _ent(e: Any, is_me: bool, enemy: bool) -> Ent:
         science=e.science, power=e.power, abs_shield=e.absoluteShield, rel_shield=e.relativeShield,
         enemy=enemy, summoned=e.summoned, name=e.name, skills=_skills_of(e, is_me),
         weapon_key=("w:" + w.name) if w is not None else None, ref=e,
-        poison_load=_poison_load(e) if enemy else 0.0,
+        poison_load=_poison_load(e) if enemy else 0.0, level=e.level,
     )
 
 
@@ -173,7 +211,10 @@ def snapshot() -> World:
         for m in Network.getMessages():
             if m.type == Message.Type.CUSTOM and m.author is not None and m.author.id != me.id:
                 team.add(m.author.id, m.params)
+    bulbs = {sk.key: bulb_prototype(sk.item, sk, me.level) for sk in me.skills if sk.kind == SUMMON and sk.item}
+    summon_count = len(me_ref.summons) if bulbs else 0
     return World(
         grid=_grid, me=me, enemies=enemies, allies=allies, los=_los,
         ops=lambda: System.operations, max_ops=System.maxOperations, turn=turn, team=team,
+        bulbs=bulbs, summon_count=summon_count, summon_limit=Fight.SUMMON_LIMIT,
     )

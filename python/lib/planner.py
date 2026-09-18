@@ -14,7 +14,7 @@
 from dataclasses import dataclass, field, replace
 
 import formulas
-from danger import BASE, SHACKLED_MP, SHACKLED_TP, Danger, unit_damage
+from danger import BASE, SHACKLED_MP, SHACKLED_TP, Danger, damage_by_range, unit_damage
 from geometry import Grid, bfs_walk
 from skills import (
     ABS_SHIELD,
@@ -29,6 +29,7 @@ from skills import (
     SHACKLE_TP,
     STAT_BUFFS,
     STAT_OF_KIND,
+    SUMMON,
     SUPPORT,
     TELEPORT,
     Skill,
@@ -56,6 +57,8 @@ class Action:
     def __str__(self) -> str:
         if self.kind in ("move", "teleport"):
             return f"{self.kind}→{self.cell}"
+        if self.kind == "summon":
+            return f"{self.skill.key if self.skill else '?'}→{self.cell}"
         return f"{self.skill.key if self.skill else '?'}×{self.n}@{self.target}"
 
 
@@ -154,6 +157,70 @@ class Planner:
                 continue
             total += wa * (self.d.danger_vs(a, a.cell, alive_base) - self.d.danger_vs(a, a.cell, alive))
         return total
+
+    # ---- invocations -------------------------------------------------------------------------------
+
+    def summon_options(self, sk: Skill, stops: list[Stop]) -> list[tuple[int, float, tuple]]:
+        """Une option par arrêt : la meilleure case d'apparition à portée de la puce (vide, LOS)."""
+        w = self.w
+        proto = w.bulbs.get(sk.key)
+        if proto is None or w.summon_count >= w.summon_limit:
+            return []
+        blocked = w.blocked
+        opts = []
+        for si, st in enumerate(stops):
+            best_c, best_v = -1, 0.0
+            for c in self.grid.ring(st.cell, sk.min_range, sk.max_range, sk.launch):
+                if blocked[c] or (sk.los and not self.w.los(st.cell, c)):
+                    continue
+                v = self.summon_value(proto, c)
+                if v > best_v:
+                    best_c, best_v = c, v
+            if best_c >= 0:
+                opts.append((sk.cost, best_v, (sk, si, best_c, 1, 0.0)))
+        return opts
+
+    def summon_value(self, proto: Ent, cell: int) -> float:
+        """Contribution attendue d'un bulbe apparaissant en `cell` : ce qu'il peut faire dès son tour (il joue
+        juste après moi) + son alpha sur les tours suivants, décoté et pondéré par sa survie."""
+        cache = self.__dict__.setdefault("_summon_v", {})
+        key = (proto.id, cell)
+        v = cache.get(key)
+        if v is not None:
+            return v
+        d = self.d
+        grid = self.grid
+        p = self.p
+        immediate = 0.0
+        for e in self.w.enemies:
+            dmg = self.__dict__.setdefault("_bulb_dmg", {}).get((proto.id, e.id))
+            if dmg is None:
+                dmg = damage_by_range(proto, e, proto.max_tp, p.poison_discount)
+                self.__dict__["_bulb_dmg"][(proto.id, e.id)] = dmg
+            dist = max(0, grid.dist(cell, e.cell) - proto.max_mp)
+            if dist < len(dmg) - 1:
+                imm = dmg[dist] * self.target_w.get(e.id, 1.0)
+                if imm > immediate:
+                    immediate = imm
+        heal_cap = 0.0
+        for hsk in proto.skills:
+            if hsk.kind == HEAL and hsk.available:
+                heal_cap += hsk.avg if hsk.raw else formulas.heal(hsk.avg, proto.wisdom, proto.power)
+        if heal_cap > 0:
+            reach = proto.max_mp + max((hsk.max_range for hsk in proto.skills if hsk.kind == HEAL), default=0)
+            for a in [self.w.me, *self.w.allies]:
+                if grid.dist(cell, a.cell) <= reach:
+                    wa = 1.0 if a.id == self.w.me.id else self.ally_w.get(a.id, 0.0)
+                    hv = min(heal_cap, a.max_life - a.life) * wa
+                    if hv > immediate:
+                        immediate = hv
+        alpha = max(d.alpha_of(proto), heal_cap)
+        bulb_danger = d.danger_vs(proto, cell)
+        survival = 1.0 if bulb_danger < proto.life * p.lethal_margin else 0.4
+        v = p.w_summon_value * (immediate + alpha * self.future_turns(p.summon_turns) * survival)
+        v -= p.w_safety * p.w_summon * bulb_danger  # ses PV comptent comme ceux d'une invocation (w_summon)
+        cache[key] = v
+        return v
 
     # ---- priorisation de cible ---------------------------------------------------------------------
 
@@ -492,6 +559,10 @@ class Planner:
             elif sk.kind in SUPPORT:
                 if sk.kind not in STAT_BUFFS or sk.turns > 1:
                     support.append(sk)
+            elif sk.kind == SUMMON:
+                opts = self.summon_options(sk, stops)
+                if opts:
+                    groups.append(opts)
             elif sk.kind in (SHACKLE_MP, SHACKLE_TP):
                 for si, st in enumerate(stops):
                     for e in self.w.enemies:
@@ -788,7 +859,7 @@ class Planner:
         by_stop: dict[int, list[tuple]] = {}
         for opt in chosen:
             by_stop.setdefault(opt[1], []).append(opt)
-        order = {SHACKLE_MP: 0, SHACKLE_TP: 0, DAMAGE: 1, POISON: 2, HEAL: 3, ABS_SHIELD: 4, REL_SHIELD: 4}
+        order = {SUMMON: -2, SHACKLE_MP: 0, SHACKLE_TP: 0, DAMAGE: 1, POISON: 2, HEAL: 3, ABS_SHIELD: 4, REL_SHIELD: 4}
         order.update(dict.fromkeys(STAT_BUFFS, -1))
         for si, st in enumerate(seq.stops):
             if st.via == WALK:
@@ -796,7 +867,10 @@ class Planner:
             elif st.via == VIA_TELEPORT:
                 actions.append(Action("teleport", cell=st.cell, skill=self.tp_skill))
             for sk, _si, tid, n, _raw in sorted(by_stop.get(si, []), key=lambda o: order.get(o[0].kind, 9)):
-                actions.append(Action("weapon" if sk.is_weapon else "chip", skill=sk, target=tid, n=n))
+                if sk.kind == SUMMON:
+                    actions.append(Action("summon", cell=tid, skill=sk))
+                else:
+                    actions.append(Action("weapon" if sk.is_weapon else "chip", skill=sk, target=tid, n=n))
         if end_cell != seq.last:
             if end_via == VIA_TELEPORT:
                 actions.append(Action("teleport", cell=end_cell, skill=self.tp_skill))

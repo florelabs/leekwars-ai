@@ -4,13 +4,16 @@
 # case il faut passer un objet `Cell` (→ moveTowardCell). On vérifie l'arrivée après chaque déplacement et
 # on explique chaque échec d'attaque en mode debug (distance, LOS) : un tour raté doit se lire dans le journal.
 
+from collections.abc import Callable
+
 from planner import Action, Plan, Planner, focus
 from team import TeamState
 from tuning import Profile
 from world import World
 
 
-def execute(world: World, plan: Plan, debug: bool = False) -> None:
+def execute(world: World, plan: Plan, debug: bool = False, summon_ai: Callable[[], None] | None = None) -> None:
+    """`summon_ai` : fonction de tour des bulbes invoqués (obligatoire pour que les invocations partent)."""
     me = Fight.me
     for a in plan.actions:
         if debug:
@@ -24,6 +27,16 @@ def execute(world: World, plan: Plan, debug: bool = False) -> None:
                 Debug.log(f"move raté : voulu {a.cell}, arrivé {me.cell.id}, PM restants {me.mp}", Color.RED)
         elif a.kind == "teleport" and a.skill is not None and a.cell is not None:
             r = me.useChipOnCell(a.skill.item, a.cell)
+            if r <= 0:
+                _explain(me, a, r, a.cell)
+        elif a.kind == "summon" and a.skill is not None and a.cell is not None:
+            if summon_ai is None:
+                Debug.log(f"{a.skill.key} : pas d'IA de bulbe fournie à execute()", Color.RED)
+                continue
+            target = Cell.get(a.cell)
+            if target is None:
+                continue
+            r = me.summon(a.skill.item, target, summon_ai)
             if r <= 0:
                 _explain(me, a, r, a.cell)
         elif a.kind == "weapon":

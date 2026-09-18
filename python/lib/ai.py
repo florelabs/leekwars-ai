@@ -21,6 +21,10 @@ BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30,
                max_stops=3, beam=16, k_walk=8, refine_plans=6, budget=0.25,
                w_ally=1.0, ally_weights={})
 
+# Profil des bulbes : leur tour consomme MON budget d'ops (même compteur) → recherche minimale, et `budget`
+# est un plafond cumulé (le mien + le leur).
+BULB = Profile(w_safety=0.7, max_stops=1, beam=4, k_walk=4, refine_plans=0, budget=0.4)
+
 scores: list[float] = []  # persiste entre les tours (les globales survivent, cf docs/runtime.md)
 
 
@@ -79,6 +83,21 @@ def fallback() -> None:
     me.moveAwayFrom(enemy)
 
 
+def bulb_turn() -> None:
+    """IA des bulbes invoqués : pendant leur tour, Fight.me EST le bulbe — même pipeline, profil léger."""
+    world = snapshot()
+    if not world.enemies:
+        return
+    try:
+        danger = Danger(world, BULB.poison_discount)
+        plan = Planner(world, BULB, danger).plan()
+        execute(world, plan, DEBUG)
+        if DEBUG:
+            Debug.log(f"[bulbe] {plan.describe()}")
+    except Exception as exc:
+        Debug.log(f"bulbe KO : {exc!r}", Color.RED)
+
+
 def turn() -> None:
     world = snapshot()
     if not world.enemies:
@@ -100,7 +119,7 @@ def turn() -> None:
             planner = Planner(world, profile, danger)
             plan = planner.plan()
         with phases.phase("exec"):
-            execute(world, plan, DEBUG)
+            execute(world, plan, DEBUG, summon_ai=bulb_turn)
             announce(world, plan, planner, profile)
         if DEBUG:
             show_danger(world, danger)

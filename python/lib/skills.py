@@ -59,6 +59,7 @@ BUFF_TP = "buff_tp"
 SHACKLE_MP = "shackle_mp"
 SHACKLE_TP = "shackle_tp"
 TELEPORT = "teleport"
+SUMMON = "summon"
 OTHER = "other"
 
 KIND_OF_EFFECT = {
@@ -84,6 +85,7 @@ KIND_OF_EFFECT = {
     E_SHACKLE_MP: SHACKLE_MP,
     E_SHACKLE_TP: SHACKLE_TP,
     E_TELEPORT: TELEPORT,
+    E_SUMMON: SUMMON,
     E_RAW_BUFF_MP: BUFF_MP,
     E_RAW_BUFF_TP: BUFF_TP,
     E_RAW_ABSOLUTE_SHIELD: ABS_SHIELD,

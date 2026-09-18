@@ -20,6 +20,8 @@ class Profile:
     w_ally: float = 1.0  # valeur d'un PV soigné / protégé / gagné sur un allié, relativement à moi
     ally_weights: dict[str, float] = field(default_factory=dict)  # par nom d'allié (carry : 1.5, bulbe : 0.3)
     w_team_focus: float = 1.3  # multiplicateur sur la cible annoncée par l'équipe (canal)
+    w_summon_value: float = 1.0  # valeur d'une invocation : contribution du bulbe (dégâts / soins) × ce facteur
+    summon_turns: int = 2  # tours futurs comptés pour un bulbe (décotés), en plus de son tour immédiat
     engage_share: float = 0.3  # j'annonce l'engagement si mon plan vaut ≥ cette part de mon alpha, ou tue
     poison_cap: float = 0.5  # au-delà de cette part des PV de la cible déjà en poison…
     w_poison_overflow: float = 0.25  # …un poison supplémentaire ne vaut plus que ça (antidote probable)
