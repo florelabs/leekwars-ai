@@ -22,8 +22,11 @@ BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30,
                w_ally=1.0, ally_weights={})
 
 # Profil des bulbes : leur tour consomme MON budget d'ops (même compteur) → recherche minimale, et `budget`
-# est un plafond cumulé (le mien + le leur).
-BULB = Profile(w_safety=0.7, max_stops=1, beam=4, k_walk=4, refine_plans=0, budget=0.4)
+# est un plafond cumulé (le mien + le leur). Un bulbe est consommable : ses PV valent w_summon (0.4) pour
+# l'équipe, sa mort coûte peu, et il doit convertir ses PT en dégâts tant qu'il est là → sécurité basse,
+# pression haute, létal quasi ignoré. Il ne se suicide pas pour rien : sans cible, danger × 0.25 > 0.
+BULB = Profile(w_safety=0.25, w_pressure=1.0, w_death=100, lethal_margin=1.0, w_tp_reserve=0, w_cover=0,
+               w_low_life=1.0, max_stops=1, beam=4, k_walk=4, refine_plans=0, budget=0.4)
 
 scores: list[float] = []  # persiste entre les tours (les globales survivent, cf docs/runtime.md)
 
