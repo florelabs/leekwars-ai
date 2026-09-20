@@ -116,8 +116,8 @@ class Seq:
 class Planner:
     def __init__(self, world: World, profile: Profile, danger: Danger | None = None) -> None:
         self.w = world
-        self.p = profile
-        self.d = danger or Danger(world, profile.poison_discount)
+        self.p = self.clocked(profile, world.turn)
+        self.d = danger or Danger(world, profile.poison_discount, profile.idle_discount)
         self.grid: Grid = world.grid
         self._reach: dict[tuple[int, int], dict[int, int]] = {}
         self._objective: dict[tuple, list[float]] = {}
@@ -133,6 +133,16 @@ class Planner:
         for s in world.me.skills:
             if s.kind == TELEPORT and s.available and s.cost <= world.me.tp and not world.teleport_used:
                 self.tp_skill = s
+
+    @staticmethod
+    def clocked(profile: Profile, turn: int) -> Profile:
+        """Horloge : passé `clock_start`, w_safety décroît linéairement jusqu'à `clock_min × w_safety` au
+        tour MAX_TURNS (64). Un match nul n'est pas une victoire."""
+        if turn <= profile.clock_start or profile.clock_min >= 1.0:
+            return profile
+        span = max(1, 64 - profile.clock_start)
+        f = max(profile.clock_min, 1.0 - (1.0 - profile.clock_min) * (turn - profile.clock_start) / span)
+        return replace(profile, w_safety=profile.w_safety * f)
 
     # ---- menace d'équipe ---------------------------------------------------------------------------
 

@@ -114,10 +114,11 @@ def has_teleport(e: Ent) -> bool:
 
 
 class Danger:
-    def __init__(self, world: World, poison_discount: float = 0.7) -> None:
+    def __init__(self, world: World, poison_discount: float = 0.7, idle_discount: float = 0.6) -> None:
         self.world = world
         self.grid: Grid = world.grid
         self.poison_discount = poison_discount
+        self.idle_discount = idle_discount
         self._fields: dict[tuple[int, str], list[float]] = {}
         self._alpha: dict[tuple[int, str], float] = {}
         self._reach: dict[tuple[int, str], dict[int, int]] = {}
@@ -155,6 +156,9 @@ class Danger:
         self._dist.setdefault(e.id, dist)
         self._dist_v[key] = dist
         dmg_at = damage_by_range(e, world.me, e.max_tp, self.poison_discount)
+        f = self.passivity(e)
+        if f < 1.0:
+            dmg_at = [v * f for v in dmg_at]
         self._alpha[key] = dmg_at[0]
         out = [0.0] * self.grid.n
         last = len(dmg_at) - 1
@@ -162,6 +166,14 @@ class Danger:
             d = dist[c]
             out[c] = dmg_at[d] if d < last else 0.0
         return out
+
+    def passivity(self, e: Ent) -> float:
+        """Décote du danger d'un ennemi observé inactif (immobile sans blesser personne) : le premier tour est
+        gratuit, puis `idle_discount` par tour, plancher 0.1. Retombe à 1 dès qu'il bouge ou frappe."""
+        idle = self.world.idle.get(e.id, 0)
+        if idle <= 1:
+            return 1.0
+        return max(0.1, self.idle_discount ** (idle - 1))
 
     def alpha(self, e: Ent, variant: str = BASE, amount: float = 0.0) -> float:
         """Dégâts max de `e` sur moi en un tour s'il est à portée (état donné)."""
@@ -239,7 +251,7 @@ class Danger:
                 cache[key] = dmg
             d = self._dist_v[(eid, variant)][cell]
             if d < len(dmg) - 1:
-                total += dmg[d]
+                total += dmg[d] * self.passivity(e)
         return total
 
     def alpha_vs(self, e: Ent, target: Ent) -> float:
@@ -250,7 +262,7 @@ class Danger:
         if dmg is None:
             dmg = damage_by_range(e, target, e.max_tp, self.poison_discount)
             cache[key] = dmg
-        return dmg[0]
+        return dmg[0] * self.passivity(e)
 
     def alpha_of(self, ent: Ent) -> float:
         """Dégâts max en un tour (PT max) de `ent` sur l'ennemi le plus rentable (caché sur ses stats)."""

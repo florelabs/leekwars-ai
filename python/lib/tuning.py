@@ -31,6 +31,11 @@ class Profile:
     w_cover: float = 4.0  # PV par obstacle adjacent à la case finale (proxy « cachette ») dans le choix du repli
     poison_discount: float = 0.7  # valeur des tours futurs d'un poison (géométrique)
     w_nova: float = 0.4  # valeur de la vie max retirée au-delà des PV courants (plafonne ses soins)
+    # Anti-immobilisme : un ennemi qui ne bouge pas et ne blesse personne voit son danger décoté ; et le
+    # temps qui passe rend agressif (un match nul au tour 64 n'est pas une victoire).
+    idle_discount: float = 0.6  # facteur par tour d'inactivité observé au-delà du premier (plancher 0.1)
+    clock_start: int = 32  # à partir de ce tour, w_safety décroît linéairement…
+    clock_min: float = 0.3  # …jusqu'à cette part de sa valeur au dernier tour (MAX_TURNS = 64)
     future_discount: float = 0.7  # valeur d'un tour futur pour les buffs multi-tours (protéine, boucliers)
     # Bornes de recherche.
     max_stops: int = 2  # arrêts (cases d'où on agit) par tour ; 1 = move → act → move

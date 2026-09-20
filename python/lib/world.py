@@ -64,6 +64,7 @@ class World:
     teleport_used: bool = False
     team: TeamState | None = None  # rapports des alliés (canal), None en solo / tests
     bulbs: dict[str, Ent] = field(default_factory=dict)  # prototype du bulbe par clé de puce d'invocation
+    idle: dict[int, int] = field(default_factory=dict)  # par ennemi : tours consécutifs sans bouger ni blesser
     summon_count: int = 0  # mes invocations vivantes
     summon_limit: int = 8
 
@@ -91,6 +92,26 @@ class World:
 _grid: Grid | None = None
 _skills_cache: dict[int, list[Skill]] = {}
 _los_cache: dict[tuple[int, int], bool] = {}
+# Observation d'un tour à l'autre (les globales survivent) : cases ennemies, vie de mon équipe, inactivité.
+_memory: dict[str, Any] = {"turn": 0, "cells": {}, "team_life": None, "idle": {}}
+
+
+def observe(turn: int, enemies: list[Ent], team_life: int) -> dict[int, int]:
+    """Met à jour les compteurs d'inactivité : +1 si l'ennemi n'a pas bougé ET que mon équipe n'a rien perdu
+    depuis ma dernière observation (une IA plantée, un campeur) ; 0 sinon. Une observation par tour."""
+    m = _memory
+    if turn == m["turn"]:
+        return dict(m["idle"])
+    idle: dict[int, int] = {}
+    hurt = m["team_life"] is not None and team_life < m["team_life"]
+    for e in enemies:
+        same = m["cells"].get(e.id) == e.cell
+        idle[e.id] = m["idle"].get(e.id, 0) + 1 if (same and not hurt and m["turn"] > 0) else 0
+    m["turn"] = turn
+    m["cells"] = {e.id: e.cell for e in enemies}
+    m["team_life"] = team_life
+    m["idle"] = idle
+    return dict(idle)
 
 
 def build_grid() -> Grid:
@@ -253,8 +274,9 @@ def snapshot() -> World:
                 team.add(m.author.id, m.params)
     bulbs = {sk.key: bulb_prototype(sk.item, sk, me.level) for sk in me.skills if sk.kind == SUMMON and sk.item}
     summon_count = len(me_ref.summons) if bulbs else 0
+    idle = observe(turn, enemies, me.life + sum(a.life for a in allies)) if not me.summoned else dict(_memory["idle"])
     return World(
         grid=_grid, me=me, enemies=enemies, allies=allies, los=_los,
         ops=lambda: System.operations, max_ops=System.maxOperations, turn=turn, team=team,
-        bulbs=bulbs, summon_count=summon_count, summon_limit=Fight.SUMMON_LIMIT,
+        bulbs=bulbs, summon_count=summon_count, summon_limit=Fight.SUMMON_LIMIT, idle=idle,
     )
