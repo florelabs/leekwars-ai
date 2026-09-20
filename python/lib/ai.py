@@ -112,6 +112,9 @@ def turn() -> None:
         Debug.log("skills : " + ", ".join(f"{s.key}[{s.kind}{'' if s.available else ' cd'}]" for s in world.me.skills))
         Debug.log("ennemis : " + ", ".join(f"{e.name} {e.life}PV {e.tp}PT {e.mp}PM {len(e.skills)} skills"
                                             for e in world.enemies))
+        for key, b in world.bulbs.items():  # stats attendues des bulbes : force 0 / 4 PT = lecture ratée
+            Debug.log(f"bulbe {key} : {b.life}PV {b.tp}PT {b.mp}PM force {b.strength} magie {b.magic} "
+                      f"sagesse {b.wisdom} science {b.science} puces {[s.key for s in b.skills]}")
     profile = pick_profile(world)
     phases = Phases(world.ops)
     plan: Plan | None = None

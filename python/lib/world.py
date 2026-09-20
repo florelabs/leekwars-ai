@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from geometry import Grid
+from bulb_templates import TEMPLATES
 from skills import E_POISON, SUMMON, Skill, refresh, skill_from_item
 from team import TeamState
 
@@ -146,29 +147,44 @@ _bulb_cache: dict[int, Ent] = {}
 
 
 def _foreign_get(raw: Any, key: int) -> Any:
-    """Lecture tolérante d'une Map de jeu marshallée (clé int, sinon str, sinon .get)."""
+    """Lecture tolérante d'une Map de jeu marshallée (clé int, str, membre, .get) ; None si illisible."""
+    if raw is None:
+        return None
     for k in (key, str(key)):
         try:
             return raw[k]
-        except (KeyError, TypeError, IndexError):
+        except Exception:  # noqa: BLE001 — ForeignObject : le type d'erreur dépend du marshalling
             pass
+    try:
+        v = getattr(raw, str(key), None)
+        if v is not None:
+            return v
+    except Exception:  # noqa: BLE001
+        pass
     get = getattr(raw, "get", None)
     if get is not None:
         try:
             return get(key)
-        except (KeyError, TypeError):
+        except Exception:  # noqa: BLE001
             return None
     return None
 
 
 def bulb_prototype(chip: Any, skill: Skill, level: int) -> Ent:
-    """Ent du bulbe qu'invoquerait `chip` à mon niveau : stats = floor(min + (max − min) × min(300, lvl) / 300),
-    puces = `bulbChips`. ~600 ops (features des puces), une fois par combat et par puce."""
+    """Ent du bulbe qu'invoquerait `chip` à mon niveau : stats = floor(min + (max − min) × min(300, lvl) / 300).
+
+    Source des caractéristiques : la table embarquée `bulb_templates.py` (id de template = valeur de l'effet
+    SUMMON), recoupée avec `chip.bulbStats` quand ce Map de jeu est lisible. Puces : `bulbChips`, sinon la
+    table. ~600 ops (features des puces), une fois par combat et par puce."""
     proto = _bulb_cache.get(chip.id)
     if proto is not None:
         return proto
-    stats: dict[str, int] = {}
     k = min(300, level) / 300.0
+    stats: dict[str, int] = {}
+    template = TEMPLATES.get(int(skill.min_v))
+    if template is not None:
+        for attr, (lo, hi) in template[1].items():
+            stats[attr] = int(lo + (hi - lo) * k)
     raw = chip.bulbStats  # Map de jeu = ForeignObject (ProxyObject) : pas itérable, on lit par clés connues
     for sid, attr in _STAT_ATTR.items():
         rng = _foreign_get(raw, sid)
@@ -180,7 +196,10 @@ def bulb_prototype(chip: Any, skill: Skill, level: int) -> Ent:
             continue
         stats[attr] = int(lo + (hi - lo) * k)
     skills: list[Skill] = []
-    for c in chip.bulbChips:
+    chips = list(chip.bulbChips or [])
+    if not chips and template is not None:
+        chips = [c for c in (Chip.get(i) for i in template[2]) if c is not None]
+    for c in chips:
         sk = skill_from_item(c, False)
         if sk is not None:
             skills.append(sk)
