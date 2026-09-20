@@ -18,7 +18,7 @@ from dataclasses import replace
 
 import formulas
 from geometry import INF, LAUNCH_CIRCLE, Grid, bfs_walk, dist_field, launch_ok
-from skills import BUFF_MP, DAMAGE, POISON, TELEPORT, Skill
+from skills import ATTACKS, BUFF_MP, DAMAGE, NOVA, POISON, TELEPORT, Skill
 from world import Ent, World
 
 BASE = "base"
@@ -42,11 +42,16 @@ def best_spend(options: list[tuple[int, float, int]], tp: int) -> float:
     return best[tp]
 
 
-def unit_damage(sk: Skill, caster: Ent, target: Ent, poison_discount: float = 1.0) -> float:
-    """Dégâts moyens d'UN usage de `sk` par `caster` sur `target` (poison : total sur ses tours, décoté)."""
+def unit_damage(sk: Skill, caster: Ent, target: Ent, poison_discount: float = 1.0, w_nova: float = 0.4) -> float:
+    """Valeur en PV d'UN usage de `sk` par `caster` sur `target` : dégâts moyens (crit compris), poison total
+    sur ses tours (décoté), nova = part immédiate + `w_nova` × part différée."""
     if sk.kind == DAMAGE:
         return formulas.damage(sk.avg, caster.strength, caster.power, target.rel_shield, target.abs_shield) * \
             formulas.expected_mult(caster.agility)
+    if sk.kind == NOVA:
+        amount = formulas.nova(sk.avg, caster.science, caster.power)
+        immediate = unit_raw(sk, caster, target)
+        return immediate + w_nova * (amount - immediate)
     if sk.kind == POISON:
         per_turn = formulas.poison(sk.avg, caster.magic, caster.power)
         total = 0.0
@@ -58,13 +63,24 @@ def unit_damage(sk: Skill, caster: Ent, target: Ent, poison_discount: float = 1.
     return 0.0
 
 
+def unit_raw(sk: Skill, caster: Ent, target: Ent) -> float:
+    """PV réellement retirés CE tour par un usage (pour les kills) : dégâts, ou part du nova qui dépasse la
+    marge `vie max − vie` de la cible. Poison : 0 (il tombe aux tours suivants)."""
+    if sk.kind == DAMAGE:
+        return unit_damage(sk, caster, target)
+    if sk.kind == NOVA:
+        amount = formulas.nova(sk.avg, caster.science, caster.power)
+        return max(0.0, amount - (target.max_life - target.life))
+    return 0.0
+
+
 def damage_by_range(attacker: Ent, target: Ent, tp: int, poison_discount: float) -> list[float]:
     """dmg[d] = meilleure dépense de `tp` par `attacker` sur `target` avec ses skills de portée max ≥ d.
     Longueur = portée max + 2 (dernier élément = 0 : hors d'atteinte)."""
     options = []
     max_range = 0
     for sk in attacker.skills:
-        if sk.kind not in (DAMAGE, POISON) or not sk.available:
+        if sk.kind not in ATTACKS or not sk.available:
             continue
         v = unit_damage(sk, attacker, target, poison_discount)
         if v <= 0:
@@ -312,7 +328,7 @@ class Danger:
                 continue
             tp_sk = next(sk for sk in e.skills if sk.kind == TELEPORT)
             reach = mobility(e) + tp_sk.max_range + max((sk.max_range for sk in e.skills
-                                                         if sk.kind in (DAMAGE, POISON)), default=0)
+                                                         if sk.kind in ATTACKS), default=0)
             if self.grid.dist(cell, e.cell) <= reach:
                 return 1.0
         alpha = self.my_alpha()
@@ -344,7 +360,7 @@ class Danger:
             options = []
             budget = max_los
             for sk in ev.skills:
-                if sk.kind not in (DAMAGE, POISON) or not sk.available:
+                if sk.kind not in ATTACKS or not sk.available:
                     continue
                 v = unit_damage(sk, ev, me, self.poison_discount)
                 if v <= 0:

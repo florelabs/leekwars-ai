@@ -30,6 +30,7 @@ class Profile:
     w_stack: float = 0.6  # rendement de chaque bouclier supplémentaire posé le même tour (en garder pour plus tard)
     w_cover: float = 4.0  # PV par obstacle adjacent à la case finale (proxy « cachette ») dans le choix du repli
     poison_discount: float = 0.7  # valeur des tours futurs d'un poison (géométrique)
+    w_nova: float = 0.4  # valeur de la vie max retirée au-delà des PV courants (plafonne ses soins)
     future_discount: float = 0.7  # valeur d'un tour futur pour les buffs multi-tours (protéine, boucliers)
     # Bornes de recherche.
     max_stops: int = 2  # arrêts (cases d'où on agit) par tour ; 1 = move → act → move

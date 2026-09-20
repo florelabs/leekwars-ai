@@ -19,13 +19,14 @@ DEBUG = True
 # vaut plus, un bulbe moins). Sans entrée, chaque allié vaut w_ally.
 BASE = Profile(w_safety=1.0, w_kill=150, w_low_life=0.5, w_tp_reserve=30,
                max_stops=3, beam=16, k_walk=8, refine_plans=6, budget=0.25,
-               w_ally=1.0, ally_weights={})
+               w_ally=1.0, ally_weights={}, w_summon_value=1.5)  # build invocateur : bulbes prioritaires
 
 # Profil des bulbes : leur tour consomme MON budget d'ops (même compteur) → recherche minimale, et `budget`
 # est un plafond cumulé (le mien + le leur). Un bulbe est consommable : ses PV valent w_summon (0.4) pour
-# l'équipe, sa mort coûte peu, et il doit convertir ses PT en dégâts tant qu'il est là → sécurité basse,
-# pression haute, létal quasi ignoré. Il ne se suicide pas pour rien : sans cible, danger × 0.25 > 0.
-BULB = Profile(w_safety=0.25, w_pressure=1.0, w_death=100, lethal_margin=1.0, w_tp_reserve=0, w_cover=0,
+# l'équipe, sa mort coûte peu, il doit convertir ses PT en dégâts tant qu'il est là.
+# Les dégâts qu'il encaisse sont des PT ennemis qui ne vont pas sur moi : w_safety quasi nul. La pression
+# reste faible : elle est spéculative, une attaque réelle doit toujours la battre (sinon il attend au bord).
+BULB = Profile(w_safety=0.1, w_pressure=0.3, w_death=30, lethal_margin=1.0, w_tp_reserve=0, w_cover=0,
                w_low_life=1.0, max_stops=1, beam=4, k_walk=4, refine_plans=0, budget=0.4)
 
 scores: list[float] = []  # persiste entre les tours (les globales survivent, cf docs/runtime.md)
@@ -93,10 +94,11 @@ def bulb_turn() -> None:
         return
     try:
         danger = Danger(world, BULB.poison_discount)
-        plan = Planner(world, BULB, danger).plan()
+        planner = Planner(world, BULB, danger)
+        plan = planner.plan()
         execute(world, plan, DEBUG)
         if DEBUG:
-            Debug.log(f"[bulbe] {plan.describe()}")
+            Debug.log(f"[bulbe] {plan.describe()} {planner.stats}")
     except Exception as exc:
         Debug.log(f"bulbe KO : {exc!r}", Color.RED)
 
@@ -127,7 +129,7 @@ def turn() -> None:
         if DEBUG:
             show_danger(world, danger)
             Debug.log(f"T{world.turn} safety={profile.w_safety} {plan.describe()}")
-            Debug.log(f"{phases.summary()} évaluations={planner.evaluations}")
+            Debug.log(f"{phases.summary()} évaluations={planner.evaluations} {planner.stats}")
     except Exception as exc:  # en combat, mieux vaut un tour moyen qu'un tour perdu
         Debug.log(f"planner KO : {exc!r}", Color.RED)
         if plan is None:

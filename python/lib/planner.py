@@ -14,10 +14,11 @@
 from dataclasses import dataclass, field, replace
 
 import formulas
-from danger import BASE, SHACKLED_MP, SHACKLED_TP, Danger, damage_by_range, unit_damage
+from danger import BASE, SHACKLED_MP, SHACKLED_TP, Danger, damage_by_range, unit_damage, unit_raw
 from geometry import Grid, bfs_walk
 from skills import (
     ABS_SHIELD,
+    ATTACKS,
     BUFF_MP,
     BUFF_TP,
     DAMAGE,
@@ -123,6 +124,7 @@ class Planner:
         self._hit: dict[tuple[int, str, int], bool] = {}
         self._tp_ring: dict[int, list[int]] = {}
         self.evaluations = 0
+        self.stats = ""  # diagnostic de la dernière recherche (cases atteignables / candidates / borne max)
         self.finalists: list[Plan] = []
         self.ally_w: dict[int, float] = {a.id: profile.w_ally * profile.ally_weights.get(a.name, 1.0)
                                          for a in world.allies}
@@ -290,8 +292,8 @@ class Planner:
         me = self.w.me
         out: list[tuple[Ent, list[Action], float]] = [(me, [], 0.0)]
         for sk in me.skills:
-            if sk.kind not in SELF_CONTEXT or not sk.available or sk.cost > me.tp:
-                continue
+            if sk.kind not in SELF_CONTEXT or not sk.available or sk.cost > me.tp or not sk.can_target(me, True):
+                continue  # (férocité : portée 1–8, ne se lance pas sur soi → support sur allié seulement)
             tp = me.tp - sk.cost
             amount = sk.avg if sk.raw else formulas.buff(sk.avg, me.science, me.power)
             bonus = 0.0
@@ -337,7 +339,7 @@ class Planner:
 
     def waypoints(self, me: Ent, reach0: dict[int, int]) -> tuple[list[int], dict[int, float]]:
         """Cases utiles (d'où au moins un skill offensif touche un ennemi) et leur borne sup de valeur."""
-        offensive = [s for s in me.skills if s.kind in (DAMAGE, POISON, SHACKLE_MP, SHACKLE_TP)
+        offensive = [s for s in me.skills if s.kind in (*ATTACKS, SHACKLE_MP, SHACKLE_TP)
                      and s.available and s.cost <= me.tp]
         tp_ring = set(self.teleport_targets(me.cell))
         blocked = self.w.blocked
@@ -347,8 +349,8 @@ class Planner:
             walk_cands: dict[int, float] = {}
             tp_cands: dict[int, float] = {}
             for sk in offensive:
-                if sk.kind in (DAMAGE, POISON):
-                    v = unit_damage(sk, me, e, self.p.poison_discount) * sk.uses_cap(me.tp)
+                if sk.kind in ATTACKS:
+                    v = unit_damage(sk, me, e, self.p.poison_discount, self.p.w_nova) * sk.uses_cap(me.tp)
                 else:
                     v = self.p.w_safety * 0.25 * self.d.at(e.cell)  # entrave : ordre de grandeur, pas une borne
                 if v <= 0:
@@ -441,8 +443,8 @@ class Planner:
             best = max(finalists, key=lambda p: p.score)
         dealt: dict[int, float] = {}
         for sk, _si, tid, _n, raw in best.chosen:
-            if sk.kind in (DAMAGE, POISON):
-                dealt[tid] = dealt.get(tid, 0.0) + raw
+            if sk.kind in ATTACKS:
+                dealt[tid] = dealt.get(tid, 0.0) + max(raw, 1.0)
         focus["target"] = max(dealt, key=lambda t: dealt[t]) if dealt else None
         return best
 
@@ -485,6 +487,7 @@ class Planner:
     def plan_ctx(self, me: Ent, prefix: list[Action]) -> Plan | None:
         reach0 = self.reach_from(me.cell, me.mp)
         cells, ub = self.waypoints(me, reach0)
+        self.stats = f"reach={len(reach0)} cells={len(cells) - 1} ub_max={max(ub.values()):.0f}"
         tp_ring = set(self.teleport_targets(me.cell)) if self.tp_skill else set()
         # Le premier arrêt est toujours la case de départ (agir avant de bouger est permis).
         root = Seq([Stop(me.cell, STAY)], me.mp, me.tp, False, ub.get(me.cell, 0.0))
@@ -540,19 +543,20 @@ class Planner:
             if not sk.available or sk.cost > tp or sk.key in in_prefix:
                 continue
             switch = 1 if sk.is_weapon and sk.key != me.weapon_key else 0
-            if sk.kind in (DAMAGE, POISON):
+            if sk.kind in ATTACKS:
                 opts = []
                 for si, st in enumerate(stops):
                     for e in self.w.enemies:
                         if not self.can_hit(st.cell, sk, e.cell):
                             continue
-                        v1 = unit_damage(sk, me, e, self.p.poison_discount)
+                        v1 = unit_damage(sk, me, e, self.p.poison_discount, self.p.w_nova)
                         if v1 <= 0:
                             continue
+                        raw1 = unit_raw(sk, me, e)
                         mult = self.target_w[e.id] * (1.0 + self.p.w_low_life * (1.0 - e.life / e.max_life))
                         if sk.kind == POISON and e.poison_load >= e.life * self.p.poison_cap:
                             mult *= self.p.w_poison_overflow  # déjà chargé : un antidote effacerait tout
-                        opts.extend((n * sk.cost + switch, n * v1 * mult, (sk, si, e.id, n, n * v1))
+                        opts.extend((n * sk.cost + switch, n * v1 * mult, (sk, si, e.id, n, n * raw1))
                                     for n in range(1, sk.uses_cap(tp - switch) + 1))
                 if opts:
                     groups.append(opts)
@@ -720,10 +724,10 @@ class Planner:
         """Résout le sac à dos courant, puis kills et repli : (valeur, choix, kills, ennemis restants, fin)."""
         value, chosen = ks.solve()
         chosen = chosen + forced
-        # Kills : dégâts bruts cumulés par cible (les poisons ne tuent pas ce tour : on ne compte que DAMAGE).
+        # Kills : PV réellement retirés ce tour par cible (`raw` : dégâts, part immédiate du nova ; poison 0).
         dealt: dict[int, float] = {}
-        for sk, _si, tid, _n, raw in chosen:
-            if sk.kind == DAMAGE:
+        for _sk, _si, tid, _n, raw in chosen:
+            if raw > 0:
                 dealt[tid] = dealt.get(tid, 0.0) + raw
         kills = [e.id for e in self.w.enemies if dealt.get(e.id, 0.0) >= e.life]
         alive = dict(alive0)

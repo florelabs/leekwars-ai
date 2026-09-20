@@ -28,6 +28,11 @@ def poison(base: float, magic: int, power: int) -> float:
     return base * (1.0 + magic / 100.0) * (1.0 + power / 100.0)
 
 
+def nova(base: float, science: int, power: int) -> float:
+    """Dégâts nova (retirent de la vie max) : science du lanceur, pas de bouclier."""
+    return base * (1.0 + science / 100.0) * (1.0 + power / 100.0)
+
+
 def heal(base: float, wisdom: int, power: int) -> float:
     return base * (1.0 + wisdom / 100.0) * (1.0 + power / 100.0)
 

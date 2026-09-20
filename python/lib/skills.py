@@ -26,7 +26,8 @@ E_SHACKLE_STRENGTH = 19
 E_BUFF_RESISTANCE = 21
 E_BUFF_WISDOM = 22
 E_LIFE_DAMAGE = 28
-E_NOVA_DAMAGE = 30
+E_NOVA_DAMAGE = 30  # altération, désintégration : retire de la vie max, amplifié par la science
+E_NOVA_DAMAGE_TO_MAGIC = 36
 E_RAW_BUFF_MP = 31  # bottes de cuir : valeur brute, non amplifiée par la science
 E_RAW_BUFF_TP = 32  # adrénaline
 E_RAW_ABSOLUTE_SHIELD = 37
@@ -44,6 +45,7 @@ E_STEAL_LIFE = 61
 # Genres de skill (chaînes pour lisibilité dans les logs).
 DAMAGE = "damage"
 POISON = "poison"
+NOVA = "nova"
 HEAL = "heal"
 ABS_SHIELD = "abs_shield"
 REL_SHIELD = "rel_shield"
@@ -67,6 +69,8 @@ KIND_OF_EFFECT = {
     E_LIFE_DAMAGE: DAMAGE,
     E_STEAL_LIFE: DAMAGE,
     E_POISON: POISON,
+    E_NOVA_DAMAGE: NOVA,
+    E_NOVA_DAMAGE_TO_MAGIC: NOVA,
     E_HEAL: HEAL,
     E_ABSOLUTE_SHIELD: ABS_SHIELD,
     E_RELATIVE_SHIELD: REL_SHIELD,
@@ -107,7 +111,8 @@ STAT_OF_KIND = {
     BUFF_POWER: "power",
 }
 
-OFFENSIVE = frozenset({DAMAGE, POISON, SHACKLE_MP, SHACKLE_TP})
+ATTACKS = frozenset({DAMAGE, POISON, NOVA})  # skills qui infligent des PV
+OFFENSIVE = ATTACKS | {SHACKLE_MP, SHACKLE_TP}
 SUPPORT = frozenset({HEAL, ABS_SHIELD, REL_SHIELD}) | frozenset(STAT_OF_KIND)  # castables sur soi / un allié
 
 # Masque de cibles d'un effet (Effect.Target.*).
