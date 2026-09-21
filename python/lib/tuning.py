@@ -22,6 +22,8 @@ class Profile:
     w_team_focus: float = 1.3  # multiplicateur sur la cible annoncée par l'équipe (canal)
     w_summon_value: float = 1.0  # valeur d'une invocation : contribution du bulbe (dégâts / soins) × ce facteur
     summon_turns: int = 2  # tours futurs comptés pour un bulbe (décotés), en plus de son tour immédiat
+    w_summon_safety: float = 0.1  # danger sur la case d'un bulbe OFFENSIF (ses PV absorbent des PT ennemis)
+    w_summon_forward: float = 3.0  # PV par case de rapprochement de l'ennemi pour un bulbe offensif
     engage_share: float = 0.3  # j'annonce l'engagement si mon plan vaut ≥ cette part de mon alpha, ou tue
     poison_cap: float = 0.5  # au-delà de cette part des PV de la cible déjà en poison…
     w_poison_overflow: float = 0.25  # …un poison supplémentaire ne vaut plus que ça (antidote probable)
@@ -30,6 +32,7 @@ class Profile:
     w_stack: float = 0.6  # rendement de chaque bouclier supplémentaire posé le même tour (en garder pour plus tard)
     w_cover: float = 4.0  # PV par obstacle adjacent à la case finale (proxy « cachette ») dans le choix du repli
     poison_discount: float = 0.7  # valeur des tours futurs d'un poison (géométrique)
+    w_boost_life: float = 0.8  # valeur d'un PV de vie max ajouté (fertilisant…) relativement à un PV soigné
     w_nova: float = 0.4  # valeur de la vie max retirée au-delà des PV courants (plafonne ses soins)
     # Anti-immobilisme : un ennemi qui ne bouge pas et ne blesse personne voit son danger décoté ; et le
     # temps qui passe rend agressif (un match nul au tour 64 n'est pas une victoire).

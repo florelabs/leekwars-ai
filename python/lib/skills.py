@@ -18,6 +18,7 @@ E_ABSOLUTE_SHIELD = 6
 E_BUFF_MP = 7
 E_BUFF_TP = 8
 E_TELEPORT = 10
+E_BOOST_MAX_LIFE = 12  # fertilisant, cuirasse, terreau : +PV et +PV max, amplifié par la sagesse
 E_POISON = 13
 E_SUMMON = 14
 E_SHACKLE_MP = 17
@@ -47,6 +48,7 @@ DAMAGE = "damage"
 POISON = "poison"
 NOVA = "nova"
 HEAL = "heal"
+BOOST_LIFE = "boost_life"
 ABS_SHIELD = "abs_shield"
 REL_SHIELD = "rel_shield"
 BUFF_STRENGTH = "buff_strength"
@@ -72,6 +74,7 @@ KIND_OF_EFFECT = {
     E_NOVA_DAMAGE: NOVA,
     E_NOVA_DAMAGE_TO_MAGIC: NOVA,
     E_HEAL: HEAL,
+    E_BOOST_MAX_LIFE: BOOST_LIFE,
     E_ABSOLUTE_SHIELD: ABS_SHIELD,
     E_RELATIVE_SHIELD: REL_SHIELD,
     E_BUFF_STRENGTH: BUFF_STRENGTH,
@@ -113,7 +116,7 @@ STAT_OF_KIND = {
 
 ATTACKS = frozenset({DAMAGE, POISON, NOVA})  # skills qui infligent des PV
 OFFENSIVE = ATTACKS | {SHACKLE_MP, SHACKLE_TP}
-SUPPORT = frozenset({HEAL, ABS_SHIELD, REL_SHIELD}) | frozenset(STAT_OF_KIND)  # castables sur soi / un allié
+SUPPORT = frozenset({HEAL, BOOST_LIFE, ABS_SHIELD, REL_SHIELD}) | frozenset(STAT_OF_KIND)  # castables sur soi / un allié
 
 # Masque de cibles d'un effet (Effect.Target.*).
 T_ENEMIES = 1

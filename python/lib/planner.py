@@ -19,6 +19,7 @@ from geometry import Grid, bfs_walk
 from skills import (
     ABS_SHIELD,
     ATTACKS,
+    BOOST_LIFE,
     BUFF_MP,
     BUFF_TP,
     DAMAGE,
@@ -226,11 +227,20 @@ class Planner:
                     hv = min(heal_cap, a.max_life - a.life) * wa
                     if hv > immediate:
                         immediate = hv
-        alpha = max(d.alpha_of(proto), heal_cap)
+        dmg_alpha = d.alpha_of(proto)
+        offensive = dmg_alpha >= heal_cap
+        alpha = max(dmg_alpha, heal_cap)
         bulb_danger = d.danger_vs(proto, cell)
         survival = 1.0 if bulb_danger < proto.life * p.lethal_margin else 0.4
         v = p.w_summon_value * (immediate + alpha * self.future_turns(p.summon_turns) * survival)
-        v -= p.w_safety * p.w_summon * bulb_danger  # ses PV comptent comme ceux d'une invocation (w_summon)
+        if offensive:
+            # Devant : ses PV absorbent des PT ennemis (pénalité de danger faible), et chaque case gagnée vers
+            # l'ennemi le plus proche compte — sinon toutes les cases « à portée » sont équivalentes et le
+            # bulbe apparaît derrière moi.
+            v -= p.w_summon_safety * bulb_danger
+            v -= p.w_summon_forward * min(grid.dist(cell, e.cell) for e in self.w.enemies)
+        else:
+            v -= p.w_safety * p.w_summon * bulb_danger  # support : en retrait, ses PV valent ceux d'une invocation
         cache[key] = v
         return v
 
@@ -388,6 +398,8 @@ class Planner:
                     continue
                 if sk.kind == HEAL:
                     v = min(self.heal_value(sk, me), a.max_life - a.life)
+                elif sk.kind == BOOST_LIFE:
+                    v = self.heal_value(sk, me) * self.p.w_boost_life
                 elif sk.kind in (ABS_SHIELD, REL_SHIELD):
                     v = self.absorbed(sk, self.shield_value(sk, me), exp_a)
                 else:
@@ -609,7 +621,7 @@ class Planner:
             # passe de survie : boucliers et soins prennent un crédit `w_death` proportionnel à ce qu'ils
             # absorbent — ils peuvent alors déplacer des PT pris aux attaques.
             lethal, survival = self.lethal_check(chosen, end[1], me)
-            if lethal and any(sk.kind not in STAT_BUFFS for sk in support):
+            if lethal and any(sk.kind not in STAT_BUFFS for sk in support):  # boucliers, soins, +PV max
                 ks2 = Knapsack(tp_v)
                 ks2.add(groups)
                 ks2.add(self.support_groups(support, me, seq, end[0], alive, death_credit=self.p.w_death))
@@ -682,6 +694,8 @@ class Planner:
                 continue
             if sk.kind == HEAL:
                 v = min(self.heal_value(sk, me), me.max_life - me.life) * credit
+            elif sk.kind == BOOST_LIFE:
+                v = self.heal_value(sk, me) * p.w_boost_life * credit  # +PV et +PV max : jamais plafonné
             else:
                 if engage_me is None:
                     engage_me = self.d.engage(end_cell, alive)
@@ -702,8 +716,11 @@ class Planner:
                 si = next((i for i, st in enumerate(stops) if self.can_hit(st.cell, sk, a.cell)), None)
                 if si is None:
                     continue
-                if sk.kind == HEAL:
-                    v = min(self.heal_value(sk, me), a.max_life - a.life)
+                if sk.kind in (HEAL, BOOST_LIFE):
+                    if sk.kind == HEAL:
+                        v = min(self.heal_value(sk, me), a.max_life - a.life)
+                    else:
+                        v = self.heal_value(sk, me) * p.w_boost_life
                     if exp_a is None:
                         exp_a = self.d.danger_vs(a, a.cell, alive)
                     if exp_a >= a.life * p.lethal_margin:
@@ -763,6 +780,8 @@ class Planner:
                 abs_block += HITS_PER_TURN * self.shield_value(sk, me)
             elif sk.kind == HEAL:
                 life = min(float(me.max_life), life + self.heal_value(sk, me))
+            elif sk.kind == BOOST_LIFE:
+                life += self.heal_value(sk, me)
         incoming = max(0.0, danger * rel_mult - abs_block)
         return incoming >= life * self.p.lethal_margin, (rel_mult, abs_block, life)
 
@@ -788,6 +807,8 @@ class Planner:
             if sk.kind == HEAL:
                 b += max([min(self.heal_value(sk, me), me.max_life - me.life)]
                          + [min(self.heal_value(sk, me), a.max_life - a.life) for a in self.w.allies])
+            elif sk.kind == BOOST_LIFE:
+                b += self.heal_value(sk, me) * self.p.w_boost_life
             elif sk.kind in (ABS_SHIELD, REL_SHIELD):
                 b += HITS_PER_TURN * self.shield_value(sk, me)
             elif sk.kind in STAT_BUFFS:
@@ -873,7 +894,8 @@ class Planner:
         by_stop: dict[int, list[tuple]] = {}
         for opt in chosen:
             by_stop.setdefault(opt[1], []).append(opt)
-        order = {SUMMON: -2, SHACKLE_MP: 0, SHACKLE_TP: 0, DAMAGE: 1, POISON: 2, HEAL: 3, ABS_SHIELD: 4, REL_SHIELD: 4}
+        order = {SUMMON: -2, SHACKLE_MP: 0, SHACKLE_TP: 0, DAMAGE: 1, POISON: 2, HEAL: 3, BOOST_LIFE: 3,
+                 ABS_SHIELD: 4, REL_SHIELD: 4}
         order.update(dict.fromkeys(STAT_BUFFS, -1))
         for si, st in enumerate(seq.stops):
             if st.via == WALK:
